@@ -20,12 +20,31 @@ from mathutils import Vector
 
 from . import runtime
 from .history import History
+from .model import LOCKED_KEY_ANGLES, SIDE_LIGHT_KEY_ANGLE
 
 
 _HISTORIES: dict[str, History] = {}
 _UNDO_FENCES: set[str] = set()
 _EXPORT_JOB: dict[str, object] | None = None
 _BAKE_JOB: dict[str, object] | None = None
+
+
+def _side_light_index(angles) -> int:
+    """Return the exact 45-degree authoring anchor, never a nearby key."""
+
+    import numpy as np
+
+    values = np.asarray(angles, dtype=np.float64)
+    matches = np.flatnonzero(
+        np.isclose(values, SIDE_LIGHT_KEY_ANGLE, rtol=0.0, atol=1.0e-5)
+    )
+    if matches.size != 1:
+        raise ValueError("Each angle lane requires exactly one 45 degree Side Light key")
+    return int(matches[0])
+
+
+def _is_locked_angle(angle: float) -> bool:
+    return any(abs(float(angle) - value) < 1.0e-5 for value in LOCKED_KEY_ANGLES)
 
 
 def _purge_history_orphans(project_uuid: str = "") -> None:
@@ -332,7 +351,7 @@ def _bake_project(context, project) -> None:
                     float(columns.max() + 1) / width,
                     1.0 - float(rows.min()) / height,
                 )
-                middle = int(np.argmin(np.abs(local_angles - 45.0)))
+                middle = _side_light_index(local_angles)
                 light_ratio = float(np.mean(masks[middle, occupancy]))
                 changed = np.any(masks[1:] != masks[:-1], axis=0)
                 variation = float(np.mean(changed[occupancy]))
@@ -435,7 +454,7 @@ def _compute_async_bake(request, cancel_flag=None):
         for uuid_value, mask in zip(lane["uuids"], masks):
             masks_by_uuid[str(uuid_value)] = np.ascontiguousarray(mask, dtype=np.bool_)
         if np.any(local_occupancy):
-            middle = int(np.argmin(np.abs(lane["angles"] - 45.0)))
+            middle = _side_light_index(lane["angles"])
             light_ratio = float(np.mean(masks[middle, local_occupancy]))
             changed = np.any(masks[1:] != masks[:-1], axis=0)
             variation = float(np.mean(changed[local_occupancy]))
@@ -679,7 +698,7 @@ def _create_project_data(context, *, sync_ui: bool = True, activate: bool = True
 class QUICKSDF_OT_project_create(bpy.types.Operator):
     bl_idname = "quicksdf.project_create"
     bl_label = "Create Quick SDF Project"
-    bl_description = "Create eight paint-ready face-shadow keys from the evaluated pose"
+    bl_description = "Create nine paint-ready face-shadow keys from the evaluated pose"
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
@@ -692,7 +711,7 @@ class QUICKSDF_OT_project_create(bpy.types.Operator):
         except Exception as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
-        self.report({"INFO"}, "Created and auto-baked eight face-shadow keys")
+        self.report({"INFO"}, "Created and auto-baked nine face-shadow keys")
         return {"FINISHED"}
 
 
@@ -1150,8 +1169,11 @@ class QUICKSDF_OT_key_move(bpy.types.Operator):
             return {"CANCELLED"}
         _discard_provisional(context, project)
         item = next((value for value in project.angles if value.uuid == self.uuid), runtime.active_angle(project))
-        if item is None or abs(float(item.angle)) < 1.0e-5 or abs(float(item.angle) - 90.0) < 1.0e-5:
-            self.report({"ERROR"}, "The 0 and 90 degree endpoints are locked")
+        if item is None or _is_locked_angle(float(item.angle)):
+            self.report(
+                {"ERROR"},
+                "The 0 and 90 degree endpoints are locked, as is the 45 degree Side Light key",
+            )
             return {"CANCELLED"}
         if any(
             str(value.uuid) != str(item.uuid)
@@ -1184,8 +1206,11 @@ class QUICKSDF_OT_key_delete(bpy.types.Operator):
             return {"CANCELLED"}
         _discard_provisional(context, project)
         item = next((value for value in project.angles if value.uuid == self.uuid), runtime.active_angle(project))
-        if item is None or abs(float(item.angle)) < 1.0e-5 or abs(float(item.angle) - 90.0) < 1.0e-5:
-            self.report({"ERROR"}, "The 0 and 90 degree endpoints cannot be deleted")
+        if item is None or _is_locked_angle(float(item.angle)):
+            self.report(
+                {"ERROR"},
+                "The 0 and 90 degree endpoints cannot be deleted, and the 45 degree Side Light key is also locked",
+            )
             return {"CANCELLED"}
         clear_histories(str(project.uuid))
         index = next(index for index, value in enumerate(project.angles) if value.uuid == item.uuid)
@@ -1994,6 +2019,24 @@ class QUICKSDF_OT_propagate_overrides(bpy.types.Operator):
                     except (ImportError, ReferenceError, RuntimeError):
                         pass
                     return {"FINISHED"}
+                became_light = touched & (before_gray < 128) & (source_gray >= 128)
+                became_shadow = touched & (before_gray >= 128) & (source_gray < 128)
+                if provisional_stroke and not (
+                    np.any(became_light) or np.any(became_shadow)
+                ):
+                    if not coverage_uuid or coverage_before is None:
+                        raise ValueError("The prepared angle Coverage is missing")
+                    from .studio import retain_provisional_after_stroke
+
+                    retain_provisional_after_stroke(
+                        context,
+                        project,
+                        gray_before=before_gray,
+                        gray=source_gray,
+                        touched=touched,
+                        coverage_before=coverage_before,
+                    )
+                    return {"FINISHED"}
                 if provisional_stroke:
                     from .studio import promote_provisional_after_stroke
 
@@ -2043,8 +2086,6 @@ class QUICKSDF_OT_propagate_overrides(bpy.types.Operator):
                 # threshold. This retains Blender's native soft brush and
                 # pressure values on the edited key while keeping every other
                 # key monotonic without rewriting unrelated images.
-                became_light = touched & (before_gray < 128) & (source_gray >= 128)
-                became_shadow = touched & (before_gray >= 128) & (source_gray < 128)
                 active_angle = float(active_item.angle)
                 for candidate in sorted(
                     (
@@ -2502,6 +2543,21 @@ class QUICKSDF_OT_history_undo(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         project = runtime.active_project(getattr(context, "scene", None))
+        if project:
+            try:
+                from .studio import provisional_history_state
+
+                provisional_active, provisional_available = provisional_history_state(
+                    context, project
+                )
+                if provisional_active:
+                    return bool(
+                        _history_context_active(context, project)
+                        and provisional_available
+                        and not bool(getattr(project, "job_running", False))
+                    )
+            except (ImportError, ReferenceError, RuntimeError):
+                pass
         uuid = str(getattr(project, "uuid", ""))
         history = _HISTORIES.get(uuid)
         return bool(
@@ -2513,6 +2569,16 @@ class QUICKSDF_OT_history_undo(bpy.types.Operator):
 
     def execute(self, context):
         project = _require_project(self, context)
+        try:
+            from .studio import apply_provisional_history, provisional_history_state
+
+            provisional_active, _available = provisional_history_state(context, project)
+            if provisional_active:
+                apply_provisional_history(context, project)
+                return {"FINISHED"}
+        except (ImportError, ReferenceError, RuntimeError, ValueError) as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
         uuid = str(project.uuid)
         history = _HISTORIES.get(uuid)
         if history is None or not history.can_undo:
@@ -2547,6 +2613,21 @@ class QUICKSDF_OT_history_redo(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         project = runtime.active_project(getattr(context, "scene", None))
+        if project:
+            try:
+                from .studio import provisional_history_state
+
+                provisional_active, provisional_available = provisional_history_state(
+                    context, project, redo=True
+                )
+                if provisional_active:
+                    return bool(
+                        _history_context_active(context, project)
+                        and provisional_available
+                        and not bool(getattr(project, "job_running", False))
+                    )
+            except (ImportError, ReferenceError, RuntimeError):
+                pass
         uuid = str(getattr(project, "uuid", ""))
         history = _HISTORIES.get(uuid)
         return bool(
@@ -2558,6 +2639,18 @@ class QUICKSDF_OT_history_redo(bpy.types.Operator):
 
     def execute(self, context):
         project = _require_project(self, context)
+        try:
+            from .studio import apply_provisional_history, provisional_history_state
+
+            provisional_active, _available = provisional_history_state(
+                context, project, redo=True
+            )
+            if provisional_active:
+                apply_provisional_history(context, project, redo=True)
+                return {"FINISHED"}
+        except (ImportError, ReferenceError, RuntimeError, ValueError) as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
         history = _HISTORIES.get(str(project.uuid))
         if history is None or not history.can_redo:
             return {"FINISHED"}

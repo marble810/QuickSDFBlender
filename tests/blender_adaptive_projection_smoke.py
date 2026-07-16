@@ -183,7 +183,7 @@ def _check() -> float | None:
 
         if phase == "WAIT_STUDIO":
             assert obj.mode == "TEXTURE_PAINT"
-            assert len(_lane(project)) == 8
+            assert len(_lane(project)) == 9
             assert int(project.material_slot_index) == 1
             originals = STATE["original_materials"]
             assert obj.material_slots[0].material == originals[0]
@@ -209,7 +209,7 @@ def _check() -> float | None:
             project.paint_value = 1
             settled = studio.settle_seek(bpy.context, project, 71.0)
             assert settled == 71.0
-            assert len(_lane(project)) == 8
+            assert len(_lane(project)) == 9
             assert session.provisional_state in {"PREPARING", "READY"}
             STATE.update(phase="WAIT_READY", ready_waits=0)
             return 0.05
@@ -260,7 +260,7 @@ def _check() -> float | None:
                 view_area, view_region, STATE["stroke"]
             )
             assert result == {"FINISHED"}, result
-            assert len(_lane(project)) == 8
+            assert len(_lane(project)) == 9
             assert session.provisional_state == "READY"
             assert str(session.provisional_uuid) == STATE["provisional_uuid"]
             image_after_noop = bpy.data.images.get(str(session.provisional_image_name))
@@ -279,7 +279,7 @@ def _check() -> float | None:
                 view_area, view_region, STATE["stroke"]
             )
             assert result == {"FINISHED"}, result
-            assert len(_lane(project)) == 9
+            assert len(_lane(project)) == 10
             assert session.provisional_state == "NONE"
             created = next(
                 item
@@ -324,12 +324,12 @@ def _check() -> float | None:
             created_after = after.copy()
             created_pointer = int(created_image.as_pointer())
             assert bpy.ops.quicksdf.history_undo() == {"FINISHED"}
-            assert len(_lane(project)) == 8
+            assert len(_lane(project)) == 9
             assert not any(str(item.uuid) == created_uuid for item in project.angles)
             assert bpy.data.images.get(created_image.name) == created_image
 
             assert bpy.ops.quicksdf.history_redo() == {"FINISHED"}
-            assert len(_lane(project)) == 9
+            assert len(_lane(project)) == 10
             restored = next(
                 item for item in project.angles if str(item.uuid) == created_uuid
             )

@@ -25,9 +25,13 @@ from bpy.props import (
 from bpy.types import PropertyGroup
 
 
-# Eight evenly spaced authoring stages.  The values are intentionally not
-# rounded: interpolation and export use the exact normalized position i / 7.
-DEFAULT_KEY_ANGLES = tuple(index * 90.0 / 7.0 for index in range(8))
+# Nine evenly spaced authoring stages.  Keeping an odd number makes the
+# physically side-on light an editable key instead of an interpolated state.
+# Values are intentionally not rounded: interpolation and export use the exact
+# normalized position i / 8.
+SIDE_LIGHT_KEY_ANGLE = 45.0
+DEFAULT_KEY_ANGLES = tuple(index * 90.0 / 8.0 for index in range(9))
+LOCKED_KEY_ANGLES = (0.0, SIDE_LIGHT_KEY_ANGLE, 90.0)
 MAX_KEYS_PER_SIDE = 16
 AUTO_KEY_ANGLE_STEP = 1.0
 AUTO_KEY_SNAP_DEGREES = 2.0

@@ -93,6 +93,7 @@ class StudioSession:
     provisional_source_token: tuple[Any, ...] = ()
     provisional_promoting: bool = False
     provisional_previous_key_uuid: str = ""
+    provisional_history: Any = None
     provisional_rebuild_after_save: bool = False
     provisional_rebuild_angle: float = -1.0
 
@@ -533,6 +534,7 @@ def discard_provisional(
     session.provisional_source_token = ()
     session.provisional_promoting = False
     session.provisional_previous_key_uuid = ""
+    session.provisional_history = None
     if keep_preview_angle and angle >= 0.0:
         session.seek_angle = angle
 
@@ -656,6 +658,7 @@ def _publish_provisional_result(job: dict[str, Any], result: tuple[Any, Any, Any
     )
     session.provisional_base_revision = 1
     session.provisional_coverage_revision = 1
+    session.provisional_history = None
     session.provisional_state = "READY"
     session.view_mode = "PROVISIONAL"
     _assign_provisional_canvas(bpy.context, project, session, image)
@@ -806,7 +809,7 @@ def activate_provisional_for_stroke(context: Any, project: Any) -> Any | None:
 
 
 def promote_provisional_after_stroke(context: Any, project: Any) -> Any:
-    """Persist an armed provisional angle after an actual 8-bit change."""
+    """Persist an armed provisional angle after crossing the binary boundary."""
 
     from . import runtime
 
@@ -903,6 +906,156 @@ def provisional_created_metadata(project: Any, item: Any) -> dict[str, Any] | No
     }
 
 
+def retain_provisional_after_stroke(
+    context: Any,
+    project: Any,
+    *,
+    gray_before: Any,
+    gray: Any,
+    touched: Any,
+    coverage_before: Any,
+) -> None:
+    """Keep a soft provisional stroke without creating a persistent key.
+
+    Display values below the binary 0.5 boundary do not affect the exported
+    threshold map yet.  They still need to remain on the session Canvas so a
+    low-strength brush can build up naturally across several strokes.  The
+    accumulated paint coverage is promoted together with the key once a later
+    stroke crosses the boundary.
+    """
+
+    import numpy as np
+
+    from . import runtime
+    from .bitplane import BitplaneRole, encode_bitplane
+
+    session = active_session(context)
+    if (
+        session is None
+        or not session.provisional_promoting
+        or not session.provisional_uuid
+    ):
+        raise StudioError("There is no prepared in-between angle to retain")
+    image = bpy.data.images.get(session.provisional_image_name)
+    if image is None:
+        raise StudioError("The prepared paint canvas is missing")
+    before_values = np.ascontiguousarray(gray_before, dtype=np.uint8)
+    values = np.ascontiguousarray(gray, dtype=np.uint8)
+    changed = np.ascontiguousarray(touched, dtype=np.bool_)
+    coverage = np.ascontiguousarray(coverage_before, dtype=np.bool_).copy()
+    if (
+        before_values.shape != values.shape
+        or values.shape != changed.shape
+        or coverage.shape != values.shape
+    ):
+        raise StudioError("The prepared paint layers changed size during the stroke")
+    coverage[changed] = True
+    from .history import History
+
+    history = session.provisional_history
+    if history is None:
+        history = History(compression_level=1)
+        session.provisional_history = history
+    transaction = history.begin_transaction("Paint Prepared Angle")
+    transaction.add_delta("display", before_values, values)
+    transaction.add_delta(
+        "coverage",
+        np.ascontiguousarray(coverage_before, dtype=np.bool_),
+        coverage,
+    )
+    if not transaction.commit():
+        if history.active_transaction is transaction:
+            transaction.rollback()
+        raise StudioError("This stroke is too large for the Quick SDF Undo history")
+    session.provisional_coverage_blob = encode_bitplane(
+        coverage,
+        BitplaneRole.COVERAGE,
+    )
+    session.provisional_coverage_revision = max(
+        1,
+        int(session.provisional_coverage_revision) + 1,
+    )
+    runtime.cache_image_gray8(image, values)
+    dismiss_first_stroke_hint()
+    finish_provisional_stroke(context, project, changed=False)
+
+
+def provisional_history_state(
+    context: Any,
+    project: Any,
+    *,
+    redo: bool = False,
+) -> tuple[bool, bool]:
+    """Return whether the temporary Canvas owns Undo and has an action."""
+
+    session = active_session(context)
+    active = bool(
+        session is not None
+        and session.project_uuid == str(project.uuid)
+        and session.provisional_uuid
+        and session.provisional_state == "READY"
+        and not session.provisional_promoting
+    )
+    if not active:
+        return False, False
+    history = session.provisional_history
+    available = bool(
+        history is not None
+        and (history.can_redo if redo else history.can_undo)
+    )
+    return True, available
+
+
+def apply_provisional_history(
+    context: Any,
+    project: Any,
+    *,
+    redo: bool = False,
+) -> bool:
+    """Undo or redo one soft stroke without touching persistent history."""
+
+    import numpy as np
+
+    from . import runtime
+    from .bitplane import BitplaneRole, decode_bitplane, encode_bitplane
+
+    active, available = provisional_history_state(context, project, redo=redo)
+    if not active or not available:
+        return False
+    session = active_session(context)
+    assert session is not None
+    image = bpy.data.images.get(session.provisional_image_name)
+    if image is None:
+        raise StudioError("The prepared paint canvas is missing")
+    history = session.provisional_history
+    coverage = decode_bitplane(
+        bytes(session.provisional_coverage_blob),
+        expected_role=BitplaneRole.COVERAGE,
+    )
+    current = {
+        "display": runtime.image_gray8(image),
+        "coverage": np.ascontiguousarray(coverage, dtype=np.bool_),
+    }
+    action = history.redo_action(current) if redo else history.undo_action(current)
+    if action is None:
+        return False
+    display = action.images.get("display", current["display"])
+    restored_coverage = action.images.get("coverage", current["coverage"])
+    runtime.write_image_gray8(image, display)
+    runtime.cache_image_gray8(image, display)
+    session.provisional_coverage_blob = encode_bitplane(
+        np.ascontiguousarray(restored_coverage, dtype=np.bool_),
+        BitplaneRole.COVERAGE,
+    )
+    session.provisional_coverage_revision = max(
+        1,
+        int(session.provisional_coverage_revision) + 1,
+    )
+    _assign_provisional_canvas(context, project, session, image)
+    tag_studio_redraw()
+    return True
+
+
 def finish_provisional_stroke(context: Any, project: Any, *, changed: bool) -> None:
     session = active_session(context)
     if session is None or not session.provisional_promoting:
@@ -929,6 +1082,7 @@ def finish_provisional_stroke(context: Any, project: Any, *, changed: bool) -> N
         session.provisional_source_token = ()
         session.provisional_promoting = False
         session.provisional_previous_key_uuid = ""
+        session.provisional_history = None
         session.view_mode = "EDIT"
         session.paint_key_uuid = uuid
         session.paint_key_angle = float(item.angle)
@@ -2729,6 +2883,8 @@ __all__ = [
     "TIMELINE_SPACE_TYPE",
     "reconcile_view_state", "register_studio", "show_export_adjustment_review",
     "finish_provisional_stroke", "prepare_stroke_brush", "promote_provisional_after_stroke",
+    "apply_provisional_history", "provisional_history_state",
+    "retain_provisional_after_stroke",
     "provisional_created_metadata",
     "resolve_session_project", "restore_stroke_brush", "seek_preview", "settle_seek",
     "select_paint_key", "set_projection_hint", "studio_areas", "tag_studio_redraw",

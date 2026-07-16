@@ -167,12 +167,12 @@ def _check() -> float | None:
             project = STATE["project"]
             _assert_isolated_host(project, STATE["original_tree"])
             keys = timeline._visible_keys(project)
-            assert len(keys) == 8
+            assert len(keys) == 9
             angles = [float(item.angle) for _index, item in keys]
             STATE["seek_cases"] = [
                 (angles[0], angles[2]),
-                (angles[2], angles[5]),
-                (angles[5], angles[7]),
+                (angles[2], angles[6]),
+                (angles[6], angles[8]),
             ]
             STATE["seek_case_index"] = 0
             STATE["seek_set_trace"] = []

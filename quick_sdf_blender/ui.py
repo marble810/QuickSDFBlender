@@ -14,6 +14,7 @@ import bpy
 
 from . import runtime
 from .i18n import tr
+from .model import LOCKED_KEY_ANGLES
 
 
 def tag_editors_for_redraw() -> None:
@@ -406,6 +407,10 @@ class QSDF_PT_advanced(bpy.types.Panel):
         active = runtime.active_angle(project)
         if active is not None:
             row = keys.row(align=True)
+            row.enabled = not any(
+                abs(float(active.angle) - angle) < 1.0e-5
+                for angle in LOCKED_KEY_ANGLES
+            )
             move = row.operator("quicksdf.key_move", text="Move / Retime", icon="ARROW_LEFTRIGHT")
             move.uuid = str(active.uuid)
             remove = row.operator("quicksdf.key_delete", text="Delete", icon="REMOVE")

@@ -83,7 +83,14 @@ def _add_keys(project, runtime, total_keys: int, lane_mode: str) -> None:
     resolution = int(project.resolution)
     empty_coverage = np.zeros((resolution, resolution), dtype=np.bool_)
     for side in wanted_sides:
-        for angle in np.linspace(0.0, 90.0, per_side):
+        angles = np.linspace(0.0, 90.0, per_side)
+        # Every production lane owns the exact Side Light anchor.  Even-sized
+        # benchmark lanes would otherwise place 45 between two samples and be
+        # rejected by the same invariant used by Studio and Rebake.
+        if not np.any(np.isclose(angles, 45.0, rtol=0.0, atol=1.0e-8)):
+            angles[int(np.argmin(np.abs(angles - 45.0)))] = 45.0
+            angles.sort()
+        for angle in angles:
             if reusable[side]:
                 item = reusable[side].pop(0)
                 image = runtime.resolve_display_image(project, item)

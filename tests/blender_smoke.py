@@ -307,7 +307,7 @@ def run(output_directory: Path) -> None:
     assert project.target_object == cube
     assert project.resolution == 512
     assert project.base_source == "NORMAL_GUIDE"
-    assert len(project.angles) == 8
+    assert len(project.angles) == 9
     np.testing.assert_allclose(
         [float(item.angle) for item in project.angles],
         DEFAULT_KEY_ANGLES,
@@ -381,12 +381,33 @@ def run(output_directory: Path) -> None:
     assert sdf_area_item.image_name == sdf_area_image.name
 
     assert not project.packing_customized
-    expected_active = min(DEFAULT_KEY_ANGLES, key=lambda value: abs(value - 45.0))
     assert math.isclose(
         float(project.angles[project.active_angle_index].angle),
-        expected_active,
+        45.0,
         abs_tol=1.0e-5,
     )
+    side_light = project.angles[project.active_angle_index]
+    angle_uuids_before = tuple(str(item.uuid) for item in project.angles)
+    for operation, expected in (
+        (
+            lambda: bpy.ops.quicksdf.key_move(
+                uuid=str(side_light.uuid), angle=44.0
+            ),
+            "45 degree Side Light key",
+        ),
+        (
+            lambda: bpy.ops.quicksdf.key_delete(uuid=str(side_light.uuid)),
+            "45 degree Side Light key",
+        ),
+    ):
+        try:
+            rejected = operation()
+        except RuntimeError as error:
+            assert expected in str(error)
+        else:
+            assert rejected == {"CANCELLED"}
+        assert tuple(str(item.uuid) for item in project.angles) == angle_uuids_before
+        assert math.isclose(float(side_light.angle), 45.0, abs_tol=1.0e-5)
     original_base_signature = project.base_signature
     assert original_base_signature
     cube.data.vertices[0].co.x += 0.01
@@ -743,7 +764,7 @@ def run(output_directory: Path) -> None:
 
     print("[Quick SDF smoke] auto-repair an invalid paint stack without changing source images")
     test_y, test_x = 100, 100
-    invalid_values = (True, False, True, True, True, True, True, True)
+    invalid_values = (True, False, True, True, True, True, True, True, True)
     original_pixels = {}
     for item, value in zip(project.angles, invalid_values):
         display = runtime.resolve_display_image(project, item)
@@ -844,7 +865,7 @@ def run(output_directory: Path) -> None:
 
     print("[Quick SDF smoke] preserve successful derived state on I/O failure")
     second_y, second_x = 101, 101
-    second_values = (False, True, False, True, True, True, True, True)
+    second_values = (False, True, False, True, True, True, True, True, True)
     for item, value in zip(project.angles, second_values):
         display = runtime.resolve_display_image(project, item)
         display_rgba = runtime.image_rgba(display)

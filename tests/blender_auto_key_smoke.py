@@ -90,12 +90,21 @@ def _start_prepare(project, studio, angle: float, action: str) -> None:
     STATE["attempts"] = 0
 
 
-def _paint_one_texel(project, runtime, seed: int) -> None:
+def _paint_one_texel(
+    project,
+    runtime,
+    seed: int,
+    *,
+    coordinate: tuple[int, int] | None = None,
+) -> None:
     canvas = bpy.context.scene.tool_settings.image_paint.canvas
     assert canvas is not None
     rgba = runtime.image_rgba8(canvas)
-    y = (seed * 11 + 7) % rgba.shape[0]
-    x = (seed * 17 + 5) % rgba.shape[1]
+    if coordinate is None:
+        y = (seed * 11 + 7) % rgba.shape[0]
+        x = (seed * 17 + 5) % rgba.shape[1]
+    else:
+        y, x = coordinate
     value = 0 if int(rgba[y, x, 0]) >= 128 else 255
     rgba[y, x, :3] = value
     rgba[y, x, 3] = 255
@@ -103,7 +112,27 @@ def _paint_one_texel(project, runtime, seed: int) -> None:
     assert bpy.ops.quicksdf.propagate_overrides() == {"FINISHED"}
 
 
-def _promote_ready(project, runtime, studio, seed: int) -> None:
+def _paint_soft_texel(runtime, *, y: int, x: int, value: int) -> None:
+    """Apply one same-side gray change through the real stroke wrapper."""
+
+    canvas = bpy.context.scene.tool_settings.image_paint.canvas
+    assert canvas is not None
+    assert bpy.ops.quicksdf.paint_snapshot() == {"FINISHED"}
+    rgba = runtime.image_rgba8(canvas)
+    rgba[y, x, :3] = int(value)
+    rgba[y, x, 3] = 255
+    runtime.write_image_rgba8(canvas, rgba)
+    assert bpy.ops.quicksdf.propagate_overrides() == {"FINISHED"}
+
+
+def _promote_ready(
+    project,
+    runtime,
+    studio,
+    seed: int,
+    *,
+    coordinate: tuple[int, int] | None = None,
+) -> None:
     session = studio.current_session()
     assert session is not None and session.provisional_state == "READY"
     expected_uuid = str(session.provisional_uuid)
@@ -117,7 +146,7 @@ def _promote_ready(project, runtime, studio, seed: int) -> None:
     assert len(_lane(project, expected_side)) == before_count
     assert canvas.packed_file is not None
     np.testing.assert_array_equal(runtime.image_gray8(canvas), before_snapshot)
-    _paint_one_texel(project, runtime, seed)
+    _paint_one_texel(project, runtime, seed, coordinate=coordinate)
     assert not session.provisional_promoting
     assert session.provisional_state == "NONE"
     created = [item for item in _lane(project, expected_side) if str(item.uuid) == expected_uuid]
@@ -169,18 +198,18 @@ def check() -> float | None:
 
         phase = str(STATE.get("phase", "INITIAL"))
         if phase == "INITIAL":
-            assert len(_lane(project, "RIGHT")) == 8
+            assert len(_lane(project, "RIGHT")) == 9
             assert len(_lane(project, "LEFT")) == 0
             initial_uuids = tuple(str(item.uuid) for item in project.angles)
             initial_images = _persistent_display_names(project, runtime)
 
-            # 14.49 quantizes to 14 degrees, which lies within the two-degree
-            # snap radius of the 12.857-degree default key.
+            # 12.49 quantizes to 12 degrees, which lies within the two-degree
+            # snap radius of the 11.25-degree default key.
             nearest = min(
                 _lane(project, "RIGHT"),
-                key=lambda item: abs(float(item.angle) - 14.0),
+                key=lambda item: abs(float(item.angle) - 12.0),
             )
-            settled = studio.settle_seek(bpy.context, project, 14.49)
+            settled = studio.settle_seek(bpy.context, project, 12.49)
             assert settled == float(nearest.angle)
             assert session.provisional_state == "NONE"
             assert tuple(str(item.uuid) for item in project.angles) == initial_uuids
@@ -188,8 +217,8 @@ def check() -> float | None:
 
             STATE["initial_uuids"] = initial_uuids
             STATE["initial_images"] = initial_images
-            # 15.49 quantizes to 15; it is just outside the same snap radius.
-            _start_prepare(project, studio, 15.49, "NO_OP")
+            # 14.49 quantizes to 14; it is just outside the same snap radius.
+            _start_prepare(project, studio, 14.49, "NO_OP")
             return 0.05
 
         if phase == "WAIT_PROVISIONAL":
@@ -214,24 +243,93 @@ def check() -> float | None:
                 provisional_canvas = bpy.context.scene.tool_settings.image_paint.canvas
                 before_snapshot = runtime.image_gray8(provisional_canvas)
                 assert bpy.ops.quicksdf.paint_snapshot() == {"FINISHED"}
-                assert len(project.angles) == 8
+                assert len(project.angles) == 9
                 assert provisional_canvas.packed_file is not None
                 np.testing.assert_array_equal(
                     runtime.image_gray8(provisional_canvas), before_snapshot
                 )
                 assert bpy.ops.quicksdf.propagate_overrides() == {"FINISHED"}
-                assert len(project.angles) == 8
+                assert len(project.angles) == 9
                 assert session.provisional_state == "READY"
                 assert not session.provisional_promoting
                 assert _persistent_display_names(project, runtime) == STATE["initial_images"]
 
-                # The same prepared Canvas becomes persistent only after an
-                # actual 8-bit display change.
-                created = _promote_ready(project, runtime, studio, 15)
-                assert len(_lane(project, "RIGHT")) == 9
+                # Same-side, low-strength strokes accumulate on the prepared
+                # Canvas without creating a key.  Only crossing the 0.5
+                # boundary promotes it, and promotion must reuse the exact
+                # same Canvas rather than visibly swapping images.
+                from quick_sdf_blender.bitplane import BitplaneRole, decode_bitplane
+
+                canvas_before_soft = bpy.context.scene.tool_settings.image_paint.canvas
+                image_name_before_soft = canvas_before_soft.name
+                uuid_before_soft = str(session.provisional_uuid)
+                soft_before = runtime.image_gray8(canvas_before_soft)
+                y, x = 7, 5
+                soft_initial = int(soft_before[y, x])
+                coverage_before_soft = decode_bitplane(
+                    session.provisional_coverage_blob,
+                    expected_role=BitplaneRole.COVERAGE,
+                )
+                if int(soft_before[y, x]) < 128:
+                    soft_values = (32, 96)
+                else:
+                    soft_values = (223, 159)
+                for expected in soft_values:
+                    _paint_soft_texel(runtime, y=y, x=x, value=expected)
+                    assert len(project.angles) == 9
+                    assert session.provisional_state == "READY"
+                    assert str(session.provisional_uuid) == uuid_before_soft
+                    canvas_after_soft = bpy.context.scene.tool_settings.image_paint.canvas
+                    assert canvas_after_soft == canvas_before_soft
+                    assert canvas_after_soft.name == image_name_before_soft
+                    assert int(runtime.image_gray8(canvas_after_soft)[y, x]) == expected
+
+                provisional_coverage = decode_bitplane(
+                    session.provisional_coverage_blob,
+                    expected_role=BitplaneRole.COVERAGE,
+                )
+                assert bool(provisional_coverage[y, x])
+                assert not session.show_first_stroke_hint
+
+                # Ctrl+Z belongs to the session-only Canvas until promotion;
+                # it must never fall through to an older persistent action.
+                assert bpy.ops.quicksdf.history_undo.poll()
+                assert bpy.ops.quicksdf.history_undo() == {"FINISHED"}
+                assert int(runtime.image_gray8(canvas_before_soft)[y, x]) == soft_values[0]
+                assert bpy.ops.quicksdf.history_undo.poll()
+                assert bpy.ops.quicksdf.history_undo() == {"FINISHED"}
+                assert int(runtime.image_gray8(canvas_before_soft)[y, x]) == soft_initial
+                provisional_coverage = decode_bitplane(
+                    session.provisional_coverage_blob,
+                    expected_role=BitplaneRole.COVERAGE,
+                )
+                assert bool(provisional_coverage[y, x]) == bool(
+                    coverage_before_soft[y, x]
+                )
+                assert not bpy.ops.quicksdf.history_undo.poll()
+                assert bpy.ops.quicksdf.history_redo.poll()
+                assert bpy.ops.quicksdf.history_redo() == {"FINISHED"}
+                assert int(runtime.image_gray8(canvas_before_soft)[y, x]) == soft_values[0]
+                assert bpy.ops.quicksdf.history_redo.poll()
+                assert bpy.ops.quicksdf.history_redo() == {"FINISHED"}
+                assert int(runtime.image_gray8(canvas_before_soft)[y, x]) == soft_values[1]
+                provisional_coverage = decode_bitplane(
+                    session.provisional_coverage_blob,
+                    expected_role=BitplaneRole.COVERAGE,
+                )
+                assert bool(provisional_coverage[y, x])
+
+                created = _promote_ready(
+                    project,
+                    runtime,
+                    studio,
+                    14,
+                    coordinate=(y, x),
+                )
+                assert len(_lane(project, "RIGHT")) == 10
                 assert len(_lane(project, "LEFT")) == 0
-                assert any(float(item.angle) == 15.0 for item in _lane(project, "RIGHT"))
-                assert len(_persistent_display_names(project, runtime)) == 9
+                assert any(float(item.angle) == 14.0 for item in _lane(project, "RIGHT"))
+                assert len(_persistent_display_names(project, runtime)) == 10
 
                 # The first stroke and the structural key promotion are one
                 # Quick SDF action. Undo detaches the key while retaining its
@@ -274,19 +372,19 @@ def check() -> float | None:
                 assert bpy.ops.quicksdf.break_mirror() == {"FINISHED"}
                 assert str(project.symmetry_mode) == "INDEPENDENT"
                 assert not project.mirror_enabled
-                assert len(_lane(project, "RIGHT")) == 9
-                assert len(_lane(project, "LEFT")) == 9
+                assert len(_lane(project, "RIGHT")) == 10
+                assert len(_lane(project, "LEFT")) == 10
                 _select_side(project, "LEFT", studio)
-                _start_prepare(project, studio, 34.4, "INDEPENDENT_LEFT")
+                _start_prepare(project, studio, 37.4, "INDEPENDENT_LEFT")
                 return 0.05
 
             if action == "INDEPENDENT_LEFT":
                 right_before = len(_lane(project, "RIGHT"))
-                _promote_ready(project, runtime, studio, 34)
-                assert len(_lane(project, "LEFT")) == 10
-                assert len(_lane(project, "RIGHT")) == right_before == 9
+                _promote_ready(project, runtime, studio, 37)
+                assert len(_lane(project, "LEFT")) == 11
+                assert len(_lane(project, "RIGHT")) == right_before == 10
                 _select_side(project, "RIGHT", studio)
-                STATE["cap_targets"] = [5.0, 8.0, 19.0, 22.0, 31.0, 34.0, 44.0]
+                STATE["cap_targets"] = [5.0, 8.0, 18.0, 26.0, 31.0, 39.0]
                 target = STATE["cap_targets"].pop(0)
                 _start_prepare(project, studio, target, "FILL_TO_LIMIT")
                 return 0.05
@@ -306,7 +404,7 @@ def check() -> float | None:
                     after,
                     tuple(float(item.angle) for item in _lane(project, "RIGHT")),
                 )
-                assert len(_lane(project, "LEFT")) == 10
+                assert len(_lane(project, "LEFT")) == 11
                 targets = STATE["cap_targets"]
                 if targets:
                     target = targets.pop(0)
@@ -314,8 +412,8 @@ def check() -> float | None:
                     return 0.05
                 assert before == 15 and after == MAX_KEYS_PER_SIDE == 16
                 persistent_before = _persistent_display_names(project, runtime)
-                result = studio.settle_seek(bpy.context, project, 57.4)
-                assert result == 57.0
+                result = studio.settle_seek(bpy.context, project, 60.4)
+                assert result == 60.0
                 assert session.provisional_state == "LIMIT"
                 assert len(_lane(project, "RIGHT")) == MAX_KEYS_PER_SIDE
                 assert _persistent_display_names(project, runtime) == persistent_before
@@ -326,7 +424,7 @@ def check() -> float | None:
                 else:
                     raise AssertionError("A seventeenth side key was unexpectedly activated")
                 assert len(_lane(project, "RIGHT")) == MAX_KEYS_PER_SIDE
-                assert len(_lane(project, "LEFT")) == 10
+                assert len(_lane(project, "LEFT")) == 11
                 studio.discard_provisional(bpy.context, project)
                 assert session.provisional_state == "NONE"
                 RESULT_PATH.write_text("PASS", encoding="utf-8")

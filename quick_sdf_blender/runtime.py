@@ -19,7 +19,7 @@ from .bitplane import (
     encode_bitplane,
     inspect_bitplane_header,
 )
-from .model import DEFAULT_KEY_ANGLES, MAX_KEYS_PER_SIDE
+from .model import DEFAULT_KEY_ANGLES, MAX_KEYS_PER_SIDE, SIDE_LIGHT_KEY_ANGLE
 
 
 PROJECT_UUID_KEY = "quick_sdf_project_uuid"
@@ -561,7 +561,9 @@ def create_project_images(project: Any, source: bpy.types.Image | None = None) -
         )
     project.active_angle_index = min(
         range(len(project.angles)),
-        key=lambda index: abs(float(project.angles[index].angle) - 45.0),
+        key=lambda index: abs(
+            float(project.angles[index].angle) - SIDE_LIGHT_KEY_ANGLE
+        ),
         default=0,
     )
     project.active_angle_uuid = (
@@ -1483,6 +1485,11 @@ def validate_project(project: Any) -> tuple[list[str], list[str]]:
             errors.append(f"{side.title()} keys require a 0 degree endpoint.")
         if not any(math.isclose(value, 90.0, abs_tol=1.0e-4) for value in values):
             errors.append(f"{side.title()} keys require a 90 degree endpoint.")
+        if not any(
+            math.isclose(value, SIDE_LIGHT_KEY_ANGLE, abs_tol=1.0e-4)
+            for value in values
+        ):
+            errors.append(f"{side.title()} keys require a 45 degree Side Light anchor.")
         if len(values) > MAX_KEYS_PER_SIDE:
             errors.append(
                 f"{side.title()} has {len(values)} angle keys; the maximum is "

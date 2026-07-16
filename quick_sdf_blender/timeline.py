@@ -5,11 +5,13 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass
+import math
 import time
 from typing import Any, Sequence
 
 import bpy
 
+from .model import SIDE_LIGHT_KEY_ANGLE
 from .studio import (
     TIMELINE_SPACE_TYPE,
     WORKSPACE_PROJECT_TAG,
@@ -52,6 +54,64 @@ _RECT_BATCH_CACHE: OrderedDict[tuple[float, float, float, float], Any] = Ordered
 _IMAGE_BATCH_CACHE: OrderedDict[tuple[float, float, float, float], Any] = OrderedDict()
 _GEOMETRY_CACHE_LIMIT = 64
 _BATCH_CACHE_LIMIT = 256
+_AUTHORING_ANGLE_MIN = 0.0
+_AUTHORING_ANGLE_MAX = 90.0
+
+
+def _progress_percent(angle: float) -> float:
+    """Convert the internal lilToon sweep coordinate to artist-facing progress."""
+
+    span = _AUTHORING_ANGLE_MAX - _AUTHORING_ANGLE_MIN
+    factor = (float(angle) - _AUTHORING_ANGLE_MIN) / span
+    return max(0.0, min(100.0, factor * 100.0))
+
+
+def _format_progress(angle: float) -> str:
+    value = f"{_progress_percent(angle):.1f}".rstrip("0").rstrip(".")
+    return f"{value}%"
+
+
+def _physical_light_yaw(angle: float) -> float:
+    """Return horizontal light yaw in degrees from the character's front.
+
+    The guide and lilToon preview use ``frontDot = progress - 0.5``.
+    Therefore the corresponding unit light direction has a horizontal yaw of
+    ``acos(frontDot)``: 120 degrees at Light Starts, 90 at Side Light, and 60
+    at Full Light.
+    """
+
+    progress = _progress_percent(angle) / 100.0
+    front_dot = max(-1.0, min(1.0, progress - 0.5))
+    return math.degrees(math.acos(front_dot))
+
+
+def _scrub_status_text(angle: float) -> str:
+    from .i18n import tr
+
+    yaw = f"{_physical_light_yaw(angle):.1f}".rstrip("0").rstrip(".")
+    return tr("Sweep %s · Light yaw %s") % (_format_progress(angle), f"{yaw}°")
+
+
+def _set_scrub_status(context: Any, angle: float) -> None:
+    workspace = getattr(context, "workspace", None)
+    status_text_set = getattr(workspace, "status_text_set", None)
+    if status_text_set is None:
+        return
+    try:
+        status_text_set(_scrub_status_text(angle))
+    except (ReferenceError, RuntimeError, TypeError):
+        pass
+
+
+def _clear_scrub_status(context: Any) -> None:
+    workspace = getattr(context, "workspace", None)
+    status_text_set = getattr(workspace, "status_text_set", None)
+    if status_text_set is None:
+        return
+    try:
+        status_text_set(None)
+    except (ReferenceError, RuntimeError, TypeError):
+        pass
 
 
 def _visible_keys(project: Any) -> list[tuple[int, Any]]:
@@ -253,16 +313,20 @@ def _seek_value(project: Any) -> float:
     return float(project.seek_angle)
 
 
+def _x_for_angle(geometry: TimelineGeometry, angle: float) -> float:
+    span = max(1.0e-6, geometry.angle_max - geometry.angle_min)
+    factor = max(0.0, min(1.0, (float(angle) - geometry.angle_min) / span))
+    return geometry.rail.x0 + factor * (geometry.rail.x1 - geometry.rail.x0)
+
+
 def _playhead_layout(
     geometry: TimelineGeometry,
     width: float,
     height: float,
     angle: float,
 ) -> tuple[float, Rect, str]:
-    span = max(1.0e-6, geometry.angle_max - geometry.angle_min)
-    factor = max(0.0, min(1.0, (angle - geometry.angle_min) / span))
-    x = geometry.rail.x0 + factor * (geometry.rail.x1 - geometry.rail.x0)
-    label = f"{angle:.1f}°"
+    x = _x_for_angle(geometry, angle)
+    label = _format_progress(angle)
     label_width = max(30.0, 8.0 + 7.0 * len(label))
     label_x0 = max(2.0, min(width - label_width - 2.0, x - label_width * 0.5))
     label_y0 = geometry.rail.y1 + 2.0
@@ -368,7 +432,7 @@ def _draw_timeline() -> None:
             ):
                 _rect(Rect(rect.x0 + 2, rect.y0 + 2, rect.x1 - 2, rect.y1 - 16), (0.18, 0.19, 0.21, 1.0))
             angle = float(getattr(item, "angle", 0.0))
-            _text(f"{angle:.1f}°", rect.x0 + 4.0, rect.y0 + 3.0, size=10)
+            _text(_format_progress(angle), rect.x0 + 4.0, rect.y0 + 3.0, size=10)
             if collection_index == highlighted:
                 _outline(rect, (0.18, 0.62, 1.0, 1.0), 2.0)
             if bool(getattr(item, "has_violation", False)):
@@ -377,26 +441,38 @@ def _draw_timeline() -> None:
                 _rect(Rect(rect.x1 - 7, rect.y1 - 7, rect.x1 - 3, rect.y1 - 3), (0.95, 0.95, 1.0, 1.0))
             else:
                 _rect(Rect(rect.x1 - 6, rect.y1 - 6, rect.x1 - 4, rect.y1 - 4), (0.70, 0.74, 0.80, 1.0))
-        _rect(
-            Rect(seek_x - 1.0, 4.0, seek_x + 1.0, geometry.rail.y1 + 5.0),
-            (1.0, 0.48, 0.08, 1.0) if previewing else (0.25, 0.72, 1.0, 1.0),
-        )
         from .i18n import tr
 
         semantic_y = max(2.0, geometry.rail.y0 - 12.0)
-        rail_mid = (geometry.rail.x0 + geometry.rail.x1) * 0.5
+        side_x = _x_for_angle(geometry, SIDE_LIGHT_KEY_ANGLE)
         semantic_color = (0.58, 0.62, 0.68, 1.0)
+        _rect(
+            Rect(
+                side_x - 1.0,
+                geometry.rail.y0 - 2.0,
+                side_x + 1.0,
+                geometry.rail.y1 + 2.0,
+            ),
+            (0.45, 0.50, 0.58, 1.0),
+        )
         _text(
             tr("Light Starts"), geometry.rail.x0, semantic_y,
             color=semantic_color, size=9,
         )
+        side_label = tr("Side Light 90°")
         _text(
-            tr("Side"), rail_mid - 12.0, semantic_y,
+            side_label, side_x - max(12.0, len(side_label) * 2.4), semantic_y,
             color=semantic_color, size=9,
         )
         _text(
             tr("Full Light"), max(2.0, geometry.rail.x1 - 48.0), semantic_y,
             color=semantic_color, size=9,
+        )
+        # Keep the active playhead above the neutral Side Light anchor when
+        # both occupy the exact midpoint.
+        _rect(
+            Rect(seek_x - 1.0, 4.0, seek_x + 1.0, geometry.rail.y1 + 5.0),
+            (1.0, 0.48, 0.08, 1.0) if previewing else (0.25, 0.72, 1.0, 1.0),
         )
         if not show_hint:
             _rect(
@@ -418,13 +494,14 @@ def _draw_timeline() -> None:
             state = str(getattr(session, "provisional_state", "NONE"))
             if state == "PREPARING":
                 _text(
-                    f"{tr('Preparing this angle')} {float(session.provisional_angle):.0f}°…",
+                    f"{tr('Preparing this angle')} "
+                    f"{_format_progress(float(session.provisional_angle))}…",
                     geometry.rail.x0,
                     geometry.rail.y1 + 5.0,
                     color=(1.0, 0.63, 0.18, 1.0),
                     size=11,
                 )
-            elif state == "READY":
+            elif state == "READY" and not show_hint:
                 _text(
                     tr("Paint here to add this angle"),
                     geometry.rail.x0,
@@ -448,7 +525,20 @@ def _draw_timeline() -> None:
                     color=(0.72, 0.76, 0.82, 1.0),
                     size=10,
                 )
-        if show_hint and session is not None:
+            elif previewing and not show_hint:
+                _text(
+                    _scrub_status_text(_seek_value(project)),
+                    geometry.rail.x0,
+                    geometry.rail.y1 + 5.0,
+                    color=(1.0, 0.63, 0.18, 1.0),
+                    size=10,
+                )
+        if (
+            show_hint
+            and session is not None
+            and str(getattr(session, "provisional_state", "NONE"))
+            not in {"PREPARING", "LIMIT"}
+        ):
             message = session.first_hint_text or "Choose an angle · choose Light or Shadow · paint"
             _text(tr(message), geometry.rail.x0, geometry.rail.y1 + 5.0, size=11)
     except (AttributeError, ReferenceError, RuntimeError, SystemError, ValueError):
@@ -553,6 +643,7 @@ class QSDF_GT_timeline_capture(bpy.types.Gizmo):
             self._dragging = True
             value = geometry.angle_from_x(x)
             _set_seek(context, project, value)
+            _set_scrub_status(context, value)
             self._last_preview_time = time.monotonic()
             return {"RUNNING_MODAL"}
         return {"FINISHED"}
@@ -572,11 +663,13 @@ class QSDF_GT_timeline_capture(bpy.types.Gizmo):
     def modal(self, context, event, _tweak):
         project = _project_for_context(context)
         if project is None:
+            _clear_scrub_status(context)
             return {"CANCELLED"}
         if event.type in {"ESC", "WINDOW_DEACTIVATE"} or (
             event.type == "RIGHTMOUSE" and event.value == "PRESS"
         ):
             self._restore_initial_key(context, project)
+            _clear_scrub_status(context)
             self._dragging = False
             return {"CANCELLED"}
         if event.type == "MOUSEMOVE":
@@ -588,12 +681,14 @@ class QSDF_GT_timeline_capture(bpy.types.Gizmo):
                 self._last_preview_time = now
             else:
                 _set_seek_position_only(context, project, value)
+            _set_scrub_status(context, value)
         if event.type == "LEFTMOUSE" and event.value == "RELEASE":
             geometry = build_geometry(
                 context.region.width, context.region.height, _visible_keys(project)
             )
             angle = geometry.angle_from_x(float(event.mouse_region_x))
             _settle_seek(context, project, angle)
+            _clear_scrub_status(context)
             self._dragging = False
             return {"FINISHED"}
         return {"RUNNING_MODAL"}
@@ -603,12 +698,14 @@ class QSDF_GT_timeline_capture(bpy.types.Gizmo):
             return
         project = _project_for_context(context)
         if project is None:
+            _clear_scrub_status(context)
             self._dragging = False
             return
         if cancel:
             self._restore_initial_key(context, project)
         else:
             _settle_seek(context, project, _seek_value(project))
+        _clear_scrub_status(context)
         self._dragging = False
 
 

@@ -101,7 +101,9 @@ def _timeline_draw_probe(timeline, timeline_area, timeline_region, project):
         rect
         for rect, _color in rectangles
         if rect.x1 - rect.x0 <= 6.0
-        and rect.y0 <= geometry.rail.y0
+        # The Side Light anchor spans only the rail.  The single interactive
+        # playhead extends from the bottom of the timeline through the rail.
+        and rect.y0 <= 8.0
         and rect.y1 >= geometry.rail.y1
     ]
     return playheads, labels
@@ -273,7 +275,7 @@ def check() -> float | None:
             # Pick a non-key angle inside the two-degree snap radius. Pressing
             # starts a continuous preview; releasing must select the nearby
             # existing stage without creating an adaptive key.
-            target_angle = 26.0
+            target_angle = 23.0
             factor = (
                 (target_angle - geometry.angle_min)
                 / (geometry.angle_max - geometry.angle_min)

@@ -15,6 +15,7 @@ $residencySmokeTest = Join-Path $repositoryRoot 'tests\blender_residency_smoke.p
 $interactivePaintSmokeTest = Join-Path $repositoryRoot 'tests\blender_interactive_paint_smoke.py'
 $studioSmokeTest = Join-Path $repositoryRoot 'tests\blender_studio_smoke.py'
 $studioSwitchSmokeTest = Join-Path $repositoryRoot 'tests\blender_studio_switch_smoke.py'
+$timelineSemanticsSmokeTest = Join-Path $repositoryRoot 'tests\blender_timeline_semantics_smoke.py'
 $timelineIsolationSmokeTest = Join-Path $repositoryRoot 'tests\blender_timeline_isolation_smoke.py'
 $autoKeySmokeTest = Join-Path $repositoryRoot 'tests\blender_auto_key_smoke.py'
 $adaptiveProjectionSmokeTest = Join-Path $repositoryRoot 'tests\blender_adaptive_projection_smoke.py'
@@ -175,7 +176,12 @@ try {
         throw "Blender Studio switch smoke test failed:`n$studioSwitchOutcome"
     }
 
-    Write-Host '==> 10/19 Verify timeline input isolation and runtime-host cleanup'
+    Write-Host '==> 10/19 Verify timeline semantics, input isolation and runtime-host cleanup'
+    & $BlenderPath --background --factory-startup --python-exit-code 1 `
+        --python $timelineSemanticsSmokeTest
+    if ($LASTEXITCODE -ne 0) {
+        throw "Blender timeline semantics smoke test failed with exit code $LASTEXITCODE"
+    }
     if (Test-Path -LiteralPath $timelineIsolationResult) {
         Remove-Item -Force -LiteralPath $timelineIsolationResult
     }

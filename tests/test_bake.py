@@ -74,16 +74,17 @@ class FaceShadowGuideTests(unittest.TestCase):
         expected = side * (np.sqrt(3.0) * 0.5) + front * 0.5
         np.testing.assert_allclose(directions[-1], expected, atol=1e-6)
 
-    def test_eight_even_authoring_keys_map_to_liltoon_front_dot(self) -> None:
-        angles = np.asarray([index * 90.0 / 7.0 for index in range(8)])
+    def test_nine_even_authoring_keys_include_exact_side_light(self) -> None:
+        angles = np.asarray([index * 90.0 / 8.0 for index in range(9)])
         returned, directions = guide_light_directions(
             angles, (0.0, -1.0, 0.0), (0.0, 0.0, 1.0), "RIGHT"
         )
         np.testing.assert_array_equal(returned, angles)
-        expected_front_dot = np.arange(8, dtype=np.float64) / 7.0 - 0.5
+        expected_front_dot = np.arange(9, dtype=np.float64) / 8.0 - 0.5
         front = np.asarray([0.0, -1.0, 0.0])
         np.testing.assert_allclose(directions @ front, expected_front_dot, atol=1e-6)
         np.testing.assert_allclose(np.linalg.norm(directions, axis=1), 1.0, atol=1e-6)
+        np.testing.assert_allclose(directions[4], [1.0, 0.0, 0.0], atol=1e-6)
 
     def test_shadow_amount_maps_to_documented_cutoff(self) -> None:
         self.assertAlmostEqual(shadow_amount_cutoff(0.0), -0.15)

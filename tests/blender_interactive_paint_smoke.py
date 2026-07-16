@@ -370,7 +370,7 @@ def run() -> None:
         settings.initialization = "WHITE"
         _expect_finished(bpy.ops.quicksdf.project_create(), "project_create")
         project = runtime.active_project()
-        assert project is not None and len(_lane(project)) == 8
+        assert project is not None and len(_lane(project)) == 9
         _test_direction_and_history(project)
         _test_failed_propagation_rolls_back(project)
         _test_hard_history_cap_rolls_back(project)
