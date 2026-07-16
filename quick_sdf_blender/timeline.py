@@ -55,23 +55,15 @@ _BATCH_CACHE_LIMIT = 256
 
 
 def _visible_keys(project: Any) -> list[tuple[int, Any]]:
-    keys = list(enumerate(getattr(project, "angles", ())))
-    independent = str(getattr(project, "symmetry_mode", "AUTO")) == "INDEPENDENT"
+    keys = list(enumerate(project.angles))
+    independent = str(project.symmetry_mode) == "INDEPENDENT"
     edit_side = str(
-        getattr(project, "active_side", "RIGHT")
+        project.active_side
         if independent
-        else getattr(project, "authoring_side", "RIGHT")
+        else project.authoring_side
     )
-    if keys and hasattr(keys[0][1], "side"):
-        keys = [(index, item) for index, item in keys if str(item.side) == edit_side]
-    else:
-        mirror = bool(getattr(project, "mirror_enabled", False))
-        if not hasattr(project, "mirror_enabled"):
-            mirror = str(getattr(project, "symmetry_mode", "INDEPENDENT")) != "INDEPENDENT"
-        if mirror:
-            sign = 1.0 if edit_side == "RIGHT" else -1.0
-            keys = [(index, item) for index, item in keys if float(item.angle) * sign >= -1.0e-4]
-    return sorted(keys, key=lambda pair: float(getattr(pair[1], "angle", 0.0)))
+    keys = [(index, item) for index, item in keys if str(item.side) == edit_side]
+    return sorted(keys, key=lambda pair: float(pair[1].angle))
 
 
 def build_geometry(width: float, height: float, keys: Sequence[tuple[int, Any]]) -> TimelineGeometry:
@@ -250,7 +242,7 @@ def _draw_thumbnail(
 def _affected_indices(project: Any, keys: Sequence[tuple[int, Any]]) -> set[int]:
     if not keys:
         return set()
-    active = int(getattr(project, "active_angle_index", keys[0][0]))
+    active = int(project.active_angle_index)
     # Interactive strokes edit only the selected key so Blender remains as
     # responsive as its native Texture Paint. Export performs the non-
     # destructive cross-angle consistency repair.
@@ -258,7 +250,7 @@ def _affected_indices(project: Any, keys: Sequence[tuple[int, Any]]) -> set[int]
 
 
 def _seek_value(project: Any) -> float:
-    return float(getattr(project, "seek_angle", getattr(project, "review_angle", 0.0)))
+    return float(project.seek_angle)
 
 
 def _playhead_layout(
@@ -338,7 +330,7 @@ def _draw_timeline() -> None:
 
     keys = _visible_keys(project)
     geometry = build_geometry(context.region.width, context.region.height, keys)
-    active = int(getattr(project, "active_angle_index", -1))
+    active = int(project.active_angle_index)
     affected = _affected_indices(project, keys)
     previewing = bool(
         session is not None
@@ -346,7 +338,7 @@ def _draw_timeline() -> None:
     )
     show_hint = bool(session is not None and session.show_first_stroke_hint)
     highlighted = active
-    bbox_values = tuple(float(value) for value in getattr(project, "thumbnail_uv_bbox", (0.0, 0.0, 1.0, 1.0)))
+    bbox_values = tuple(float(value) for value in project.thumbnail_uv_bbox)
     uv_bbox = bbox_values if (
         len(bbox_values) == 4
         and 0.0 <= bbox_values[0] < bbox_values[2] <= 1.0
@@ -468,64 +460,16 @@ def _draw_timeline() -> None:
             pass
 
 
-def _operator_exists(idname: str) -> bool:
-    namespace, name = idname.split(".", 1)
-    return hasattr(getattr(bpy.ops, namespace, object()), name)
-
-
 def _select_key(context: Any, project: Any, index: int) -> None:
-    item = project.angles[index]
-    if _operator_exists("quicksdf.key_select"):
-        operator = bpy.ops.quicksdf.key_select
-        props = operator.get_rna_type().properties.keys()
-        kwargs: dict[str, Any] = {}
-        if "index" in props:
-            kwargs["index"] = index
-        if "uuid" in props:
-            kwargs["uuid"] = str(getattr(item, "uuid", ""))
-        elif "key_uuid" in props:
-            kwargs["key_uuid"] = str(getattr(item, "uuid", ""))
-        try:
-            if "FINISHED" in operator("EXEC_DEFAULT", **kwargs):
-                return
-        except (RuntimeError, TypeError):
-            pass
-    project.active_angle_index = index
-    if hasattr(project, "review_angle"):
-        project.review_angle = float(item.angle)
-    if hasattr(project, "seek_angle"):
-        project.seek_angle = float(item.angle)
-    try:
-        from .runtime import sync_canvas
+    from .studio import select_paint_key
 
-        sync_canvas(context, project)
-    except (ImportError, ReferenceError, RuntimeError):
-        pass
-    tag_timeline_redraw()
+    select_paint_key(context, project, index=index)
 
 
 def _set_seek(context: Any, project: Any, value: float) -> None:
-    try:
-        from .studio import seek_preview
+    from .studio import seek_preview
 
-        seek_preview(context, project, value, show_in_image_editor=True)
-        return
-    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-        pass
-    if _operator_exists("quicksdf.seek_set"):
-        operator = bpy.ops.quicksdf.seek_set
-        props = operator.get_rna_type().properties.keys()
-        kwargs = {name: value for name in ("angle", "value") if name in props}
-        try:
-            if "FINISHED" in operator("EXEC_DEFAULT", **kwargs):
-                return
-        except (RuntimeError, TypeError):
-            pass
-    if hasattr(project, "seek_angle"):
-        project.seek_angle = value
-    elif hasattr(project, "review_angle"):
-        project.review_angle = value
-    tag_timeline_redraw()
+    seek_preview(context, project, value, show_in_image_editor=True)
 
 
 def _set_seek_position_only(context: Any, project: Any, value: float) -> None:
@@ -533,23 +477,17 @@ def _set_seek_position_only(context: Any, project: Any, value: float) -> None:
 
     angle = max(0.0, min(90.0, float(value)))
     project.seek_angle = angle
-    sign = -1.0 if str(getattr(project, "authoring_side", "RIGHT")) == "LEFT" else 1.0
-    if hasattr(project, "review_angle"):
-        project.review_angle = sign * angle
     session = active_session(context)
-    if session is not None and session.project_uuid == str(getattr(project, "uuid", "")):
+    if session is not None and session.project_uuid == str(project.uuid):
         session.view_mode = "PREVIEW"
         session.seek_angle = angle
     tag_timeline_redraw()
 
 
 def _settle_seek(context: Any, project: Any, value: float) -> None:
-    try:
-        from .studio import settle_seek
+    from .studio import settle_seek
 
-        settle_seek(context, project, value)
-    except (ImportError, AttributeError, ReferenceError, RuntimeError, ValueError):
-        _set_seek(context, project, value)
+    settle_seek(context, project, value)
     tag_timeline_redraw()
 
 
@@ -606,9 +544,9 @@ class QSDF_GT_timeline_capture(bpy.types.Gizmo):
         )
         if scrub_lane.contains(x, y) or label_rect.contains(x, y):
             self._initial_seek = _seek_value(project)
-            active = int(getattr(project, "active_angle_index", -1))
+            active = int(project.active_angle_index)
             self._initial_key_uuid = str(
-                getattr(project.angles[active], "uuid", "")
+                project.angles[active].uuid
                 if 0 <= active < len(project.angles)
                 else ""
             )

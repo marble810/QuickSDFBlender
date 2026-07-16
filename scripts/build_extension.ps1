@@ -10,7 +10,7 @@ $buildDirectory = Join-Path $repositoryRoot 'build'
 $nativeBuild = Join-Path $repositoryRoot 'native\build.ps1'
 $smokeTest = Join-Path $repositoryRoot 'tests\blender_smoke.py'
 $previewRenderSmokeTest = Join-Path $repositoryRoot 'tests\blender_preview_render_probe.py'
-$schemaSmokeTest = Join-Path $repositoryRoot 'tests\blender_schema6_smoke.py'
+$bitplaneSmokeTest = Join-Path $repositoryRoot 'tests\blender_bitplane_persistence_smoke.py'
 $residencySmokeTest = Join-Path $repositoryRoot 'tests\blender_residency_smoke.py'
 $interactivePaintSmokeTest = Join-Path $repositoryRoot 'tests\blender_interactive_paint_smoke.py'
 $studioSmokeTest = Join-Path $repositoryRoot 'tests\blender_studio_smoke.py'
@@ -105,11 +105,11 @@ try {
         throw "Blender preview render smoke test failed with exit code $LASTEXITCODE"
     }
 
-    Write-Host '==> 5/19 Verify schema-6 bitplane save/reload persistence'
+    Write-Host '==> 5/19 Verify bitplane save/reload persistence'
     & $BlenderPath --background --factory-startup --python-exit-code 1 `
-        --python $schemaSmokeTest
+        --python $bitplaneSmokeTest
     if ($LASTEXITCODE -ne 0) {
-        throw "Blender schema-6 smoke test failed with exit code $LASTEXITCODE"
+        throw "Blender bitplane persistence smoke test failed with exit code $LASTEXITCODE"
     }
 
     Write-Host '==> 6/19 Verify 2K packed residency and cold reload'

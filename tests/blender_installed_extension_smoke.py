@@ -40,7 +40,7 @@ def run(module_name: str, expected_version: str, isolated_root: Path) -> None:
     with manifest_path.open("rb") as handle:
         manifest = tomllib.load(handle)
     assert str(manifest["version"]) == expected_version
-    # bl_info is legacy metadata and Blender's Extension loader may omit it
+    # bl_info is classic add-on metadata and Blender's Extension loader may omit it
     # from the public package module. If exposed, it must still agree.
     if hasattr(addon, "bl_info"):
         expected_tuple = tuple(int(part) for part in expected_version.split("."))
@@ -48,34 +48,62 @@ def run(module_name: str, expected_version: str, isolated_root: Path) -> None:
 
     native = importlib.import_module(f"{module_name}.native")
     assert native.available()
-    assert native.version() == 7
-    assert native.native_threshold_available()
+    assert native.version() == 8
+    assert native.NATIVE_ABI == 8
     assert native.native_guide_bake_available()
-    assert native.native_repair_available()
+    assert native.native_interpolation_available()
+    assert native.native_packed_lane_available()
     dll = native._load()
-    assert hasattr(dll, "qsdf_repair_side_monotonic")
-    assert hasattr(dll, "qsdf_generate_threshold_pair_cancelable")
+    for symbol in (
+        "qsdf_interpolate_binary_masks",
+        "qsdf_bake_face_shadow_guide",
+        "qsdf_repair_lane_bits",
+        "qsdf_generate_threshold_transitions",
+    ):
+        assert hasattr(dll, symbol), symbol
 
     # Exercise the DLL through the installed package, not merely its symbol
-    # table. Fractional 8-stage angles catch stale pre-ABI-5 builds that would
-    # otherwise truncate authoring angles or use the old reserved endpoints.
+    # table. Fractional 8-stage angles catch builds that truncate authoring
+    # angles or encode the endpoints incorrectly.
     core = importlib.import_module(f"{module_name}.core")
     model = importlib.import_module(f"{module_name}.model")
     packing = importlib.import_module(f"{module_name}.packing")
     bitplane = importlib.import_module(f"{module_name}.bitplane")
-    assert model.SCHEMA_VERSION == 6
     angles = np.arange(8, dtype=np.float64) * (90.0 / 7.0)
     steps = np.arange(8, dtype=np.int64)[:, None]
-    right = (steps >= np.array([0, 1, 4, 8])[None, :]).reshape(8, 1, 4)
-    left = (steps >= np.array([7, 5, 2, 0])[None, :]).reshape(8, 1, 4)
-    expected = core.generate_threshold_pair_channels(right, angles, left, angles)
-    actual = native.generate_threshold_pair(right, angles, left, angles)
+    right_transitions = np.array([[0, 1, 4, 8]], dtype=np.uint8)
+    left_transitions = np.array([[7, 5, 2, 0]], dtype=np.uint8)
+    right = (steps >= right_transitions.reshape(1, 4)).reshape(8, 1, 4)
+    left = (steps >= left_transitions.reshape(1, 4)).reshape(8, 1, 4)
+    expected = np.empty((1, 4, 2), dtype=np.uint16)
+    core.generate_threshold_transitions(
+        right_transitions, angles, out=expected, channel=0
+    )
+    core.generate_threshold_transitions(
+        left_transitions, angles, out=expected, channel=1
+    )
+    actual = np.empty_like(expected)
+    native.generate_threshold_transitions(
+        right_transitions, angles, out=actual, channel=0
+    )
+    native.generate_threshold_transitions(
+        left_transitions, angles, out=actual, channel=1
+    )
     assert expected.shape == actual.shape == (1, 4, 2)
     assert expected.dtype == actual.dtype == np.uint16
     assert expected.flags.c_contiguous and actual.flags.c_contiguous
     np.testing.assert_array_equal(actual, expected)
     assert expected[0, 0, 0] == 65535
     assert expected[0, 3, 0] == 0
+    lane = core.pack_lane_bits(right, angles, ~right, np.zeros_like(right))
+    expected_repair = core.repair_packed_lane(lane)
+    actual_repair = native.repair_packed_lane(lane)
+    np.testing.assert_array_equal(
+        actual_repair.transition_indices, expected_repair.transition_indices
+    )
+    np.testing.assert_array_equal(
+        actual_repair.changed_count, expected_repair.changed_count
+    )
 
     sdf_area = np.asarray([[True, True, False, False]], dtype=np.bool_)
     strength = np.asarray([[1.0, 0.5, 0.25, 0.0]], dtype=np.float64)
@@ -154,7 +182,7 @@ def run(module_name: str, expected_version: str, isolated_root: Path) -> None:
     assert bpy.types.PropertyGroup.bl_rna_get_subclass_py("QSDFPackingChannel") is not None
     assert bpy.types.PropertyGroup.bl_rna_get_subclass_py("QSDFAuxMask") is not None
     project = bpy.context.scene.quick_sdf_projects.add()
-    project.uuid = "installed-schema-six"
+    project.uuid = "installed-current-project"
     uuids = iter(("installed-area", "installed-strength"))
     aux_items = model.ensure_standard_aux_masks(
         project, uuid_factory=lambda: next(uuids)

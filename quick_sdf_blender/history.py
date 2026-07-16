@@ -2,15 +2,9 @@
 """Compressed, Blender-independent undo history for texture changes.
 
 Blender's native undo does not reliably group edits to several ``Image``
-datablocks into one operation. :class:`History` is the fallback used by Quick
-SDF: it stores only the changed pixel indices and values and compresses them
-with zlib. It accepts the RGBA arrays used by Blender as well as the 2D
-``uint8`` and boolean planes used by Quick SDF's compact storage.
-
-The class never mutates arrays supplied by the caller. ``undo`` and ``redo``
-retain their original dictionary-returning API. Callers that also need to undo
-or redo structure (for example, an automatically created angle key) can attach
-portable metadata to ``push`` and use ``undo_action`` / ``redo_action``.
+datablocks into one operation. :class:`History` stores only the changed pixel
+indices and values and compresses them with zlib. Transactions combine Display,
+Coverage, propagated keys, and structural metadata into one undoable action.
 """
 
 from __future__ import annotations
@@ -25,7 +19,6 @@ import zlib
 import numpy as np
 
 
-# ``byte_budget`` remains the compatibility name for the per-action hard cap.
 # The retained undo stack has a lower soft target: when it is exceeded older
 # actions are evicted, but the newest valid action remains available.
 DEFAULT_BYTE_BUDGET = 256 * 1024 * 1024
@@ -516,10 +509,8 @@ class HistoryTransaction:
 class History:
     """A bounded stack of compressed, multi-plane pixel actions.
 
-    ``push`` returns ``True`` when an action was recorded. It returns ``False``
-    for a no-op or when the action alone is larger than ``byte_budget``.
-    ``undo`` and ``redo`` preserve the legacy image-dictionary API; use their
-    ``*_action`` counterparts to also receive structural metadata.
+    Use :meth:`begin_transaction`, add each changed plane, then commit once.
+    Undo and redo return both changed arrays and optional structural metadata.
     """
 
     def __init__(
@@ -625,30 +616,6 @@ class History:
         self._transaction = transaction
         return transaction
 
-    def add_delta(self, key: str, before: np.ndarray, after: np.ndarray) -> bool:
-        """Compatibility convenience for the currently active transaction."""
-
-        if self._transaction is None:
-            raise RuntimeError("no history transaction is active")
-        return self._transaction.add_delta(key, before, after)
-
-    def commit(self) -> bool:
-        """Commit the active transaction."""
-
-        if self._transaction is None:
-            raise RuntimeError("no history transaction is active")
-        return self._transaction.commit()
-
-    def rollback(
-        self,
-        current: Mapping[str, np.ndarray] | None = None,
-    ) -> dict[str, np.ndarray]:
-        """Abort the active transaction, optionally restoring its before values."""
-
-        if self._transaction is None:
-            raise RuntimeError("no history transaction is active")
-        return self._transaction.rollback(current)
-
     def _close_transaction(self, transaction: HistoryTransaction) -> None:
         if self._transaction is not transaction:
             raise RuntimeError("history transaction is no longer active")
@@ -659,10 +626,8 @@ class History:
         self._bytes_used -= sum(entry.storage_bytes for entry in self._redo)
         self._redo.clear()
 
-    def _append_entry(self, entry: _Entry, *, discard_redo_on_failure: bool) -> bool:
+    def _append_entry(self, entry: _Entry) -> bool:
         if entry.storage_bytes > self.byte_budget:
-            if discard_redo_on_failure:
-                self._discard_redo()
             return False
         self._discard_redo()
         self._undo.append(entry)
@@ -688,35 +653,10 @@ class History:
             # Keep compressed before values alive so the caller can rollback
             # already-published keys without retaining uncompressed snapshots.
             return False
-        recorded = self._append_entry(entry, discard_redo_on_failure=False)
+        recorded = self._append_entry(entry)
         assert recorded
         self._close_transaction(transaction)
         return True
-
-    def push(
-        self,
-        label: str,
-        before: Mapping[str, np.ndarray],
-        after: Mapping[str, np.ndarray],
-        *,
-        metadata: Mapping[str, object] | None = None,
-    ) -> bool:
-        if not isinstance(label, str):
-            raise TypeError("label must be a string")
-
-        packed_metadata = _pack_metadata(metadata)
-        images: dict[str, _ArrayDelta] = {}
-        for key, first, second in _validate_images(before, after):
-            delta = _make_delta(first, second, compression_level=self.compression_level)
-            if delta is not None:
-                images[key] = delta
-        if not images and metadata is None:
-            return False
-
-        entry = _Entry(label=label, images=images, metadata=packed_metadata)
-        # Preserve legacy push semantics: attempting a new operation clears a
-        # redo branch even when its representation exceeds the hard cap.
-        return self._append_entry(entry, discard_redo_on_failure=True)
 
     def _apply_action(
         self,
@@ -757,19 +697,6 @@ class History:
         """Redo the next action and return pixels plus structural metadata."""
 
         return self._apply_action(self._redo, self._undo, current, use_after=True)
-
-    def undo(self, current: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]:
-        """Return affected images with the newest action's pixels restored."""
-
-        result = self.undo_action(current)
-        return result.images if result is not None else {}
-
-    def redo(self, current: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]:
-        """Return affected images with the next action's pixels reapplied."""
-
-        result = self.redo_action(current)
-        return result.images if result is not None else {}
-
 
 __all__ = [
     "DEFAULT_BYTE_BUDGET",

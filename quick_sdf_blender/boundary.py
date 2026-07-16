@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import floor, hypot
-from typing import Any, Callable, Iterable, MutableSequence, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 
 EPSILON = 1.0e-9
@@ -412,28 +412,11 @@ def rasterize_closed_curve(
     return result
 
 
-def composite_generated_region(
-    rgba: MutableSequence[float],
-    region: Sequence[int | bool],
-    value: float,
-) -> None:
-    """Apply a generated region while preserving alpha-one paint overrides."""
-    if len(rgba) != len(region) * 4:
-        raise ValueError("RGBA buffer and region size differ")
-    value = max(0.0, min(1.0, float(value)))
-    for index, covered in enumerate(region):
-        offset = index * 4
-        if covered and rgba[offset + 3] < 0.5:
-            rgba[offset : offset + 4] = value, value, value, 0.0
-
-
 def _active_project(scene: Any) -> Any | None:
-    projects = getattr(scene, "quick_sdf_projects", None)
-    if projects is None:
-        projects = getattr(scene, "qsdf_projects", None)
+    projects = scene.quick_sdf_projects
     if not projects:
         return None
-    index = int(getattr(scene, "quick_sdf_active_project_index", getattr(scene, "qsdf_active_project_index", 0)))
+    index = int(scene.quick_sdf_active_project_index)
     return projects[max(0, min(index, len(projects) - 1))]
 
 
@@ -461,20 +444,16 @@ def _point_assign(point: Any, uv: Vec2) -> None:
 
 
 def _key_for_angle(track: Any, angle: float, create: bool = False) -> Any | None:
-    keys = getattr(track, "keys", None)
-    if keys is None:
-        return None
+    keys = track.keys
     for key in keys:
-        if abs(float(getattr(key, "angle", 0.0)) - angle) <= 1.0e-4:
+        if abs(float(key.angle) - angle) <= 1.0e-4:
             return key
-    if not create or not hasattr(keys, "add"):
+    if not create:
         return None
     key = keys.add()
     key.angle = angle
-    if hasattr(key, "is_manual"):
-        key.is_manual = True
-    if hasattr(track, "active_key_index"):
-        track.active_key_index = len(keys) - 1
+    key.is_manual = True
+    track.active_key_index = len(keys) - 1
     return key
 
 
@@ -487,34 +466,20 @@ except ImportError:  # pragma: no cover - intentionally supports plain Python
 
 if bpy is not None:
     def _target_object(project: Any) -> Any | None:
-        target = getattr(project, "target_object", None)
-        if target is None and getattr(project, "target_object_name", ""):
-            target = bpy.data.objects.get(project.target_object_name)
-        return target
+        return project.target_object
 
 
     def _angle_value(angle_item: Any) -> float:
-        return float(getattr(angle_item, "angle", getattr(angle_item, "value", 0.0)))
-
-
-    def _angle_image(angle_item: Any) -> Any | None:
-        image = getattr(angle_item, "display_image", None)
-        if image is None and getattr(angle_item, "display_image_name", ""):
-            image = bpy.data.images.get(angle_item.display_image_name)
-        return image
+        return float(angle_item.angle)
 
 
     def _ensure_track_key(project: Any) -> tuple[Any | None, Any | None]:
         track = _active_track(project)
         if track is None:
-            tracks = getattr(project, "boundary_tracks", None)
-            if tracks is None or not hasattr(tracks, "add"):
-                return None, None
+            tracks = project.boundary_tracks
             track = tracks.add()
-            if hasattr(track, "name"):
-                track.name = f"Boundary {len(tracks)}"
-            if hasattr(project, "active_boundary_track_index"):
-                project.active_boundary_track_index = len(tracks) - 1
+            track.name = f"Boundary {len(tracks)}"
+            project.active_boundary_track_index = len(tracks) - 1
         angle_item = _active_angle(project)
         angle = _angle_value(angle_item) if angle_item is not None else 0.0
         return track, _key_for_angle(track, angle, create=True)
@@ -649,21 +614,6 @@ if bpy is not None:
             fill_inside=fill_inside,
             island_mask=island_mask,
         )
-
-
-    def commit_boundary_to_image(project: Any, track: Any, key: Any) -> bool:
-        """Compatibility helper used by scripts to composite a single key."""
-        angle_item = _active_angle(project)
-        image = _angle_image(angle_item) if angle_item is not None else None
-        if image is None or not getattr(image, "has_data", False):
-            return False
-        region = _region_for_boundary(project, track, key.points, image.size[0], image.size[1])
-        pixels = list(image.pixels[:])
-        value = float(getattr(track, "paint_value", 0.0))
-        composite_generated_region(pixels, region, value)
-        image.pixels.foreach_set(pixels)
-        image.update()
-        return True
 
 
     def evaluate_boundary_mask(
@@ -875,10 +825,8 @@ if bpy is not None:
                         key.points.remove(len(key.points) - 1)
                 self.report({"ERROR"}, message)
                 return {"CANCELLED"}
-            if hasattr(key, "is_manual"):
-                key.is_manual = True
-            if hasattr(project, "dirty"):
-                project.dirty = True
+            key.is_manual = True
+            project.dirty = True
             try:
                 from .operators import clear_histories
 
@@ -891,14 +839,12 @@ if bpy is not None:
                 self.report({"ERROR"}, str(exc))
                 return {"CANCELLED"}
             if angle_item is not None:
-                if hasattr(angle_item, "is_manual"):
-                    angle_item.is_manual = True
-                if hasattr(angle_item, "is_generated"):
-                    angle_item.is_generated = False
+                angle_item.is_manual = True
+                angle_item.is_generated = False
             try:
                 from .runtime import validate_project
 
-                validate_project(project, include_monotonic=True)
+                validate_project(project)
             except (RuntimeError, ValueError):
                 pass
             for area in context.screen.areas if context.screen else ():
@@ -942,7 +888,7 @@ if bpy is not None:
                         regenerate_boundary_images(project)
                         from .runtime import validate_project
 
-                        validate_project(project, include_monotonic=True)
+                        validate_project(project)
                     except (RuntimeError, ValueError) as exc:
                         self.report({"WARNING"}, str(exc))
                     manual_angles = {
@@ -973,7 +919,6 @@ __all__ = [
     "BezierKnot",
     "CLASSES",
     "close_open_curve_along_island",
-    "composite_generated_region",
     "cubic_bezier",
     "curve_self_intersects",
     "evaluate_boundary_mask",

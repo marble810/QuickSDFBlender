@@ -54,26 +54,6 @@ def _validated_triangles(
     return np.ascontiguousarray(uvs), np.ascontiguousarray(normalized)
 
 
-def _validated_angles(angles: Sequence[float] | np.ndarray) -> np.ndarray:
-    values = np.asarray(angles, dtype=np.float64)
-    if values.ndim != 1 or values.size == 0:
-        raise ValueError("angles must be a non-empty 1D sequence")
-    if not np.all(np.isfinite(values)):
-        raise ValueError("angles must be finite")
-    if np.any(values < -90.0 - _ANGLE_EPSILON) or np.any(
-        values > 90.0 + _ANGLE_EPSILON
-    ):
-        raise ValueError("angles must be in the inclusive range -90..90")
-    ordered = np.sort(values)
-    if values.size > 1 and np.any(np.diff(ordered) <= _ANGLE_EPSILON):
-        raise ValueError("angles must be unique")
-    if np.count_nonzero(
-        np.isclose(values, 0.0, atol=_ANGLE_EPSILON, rtol=0.0)
-    ) != 1:
-        raise ValueError("angles must contain exactly one 0 degree value")
-    return np.ascontiguousarray(values)
-
-
 def _validated_guide_angles(angles: Sequence[float] | np.ndarray) -> np.ndarray:
     values = np.asarray(angles, dtype=np.float64)
     if values.ndim != 1 or values.size < 2:
@@ -101,38 +81,6 @@ def _unit_vector(value: Sequence[float] | np.ndarray, *, name: str) -> np.ndarra
     if length <= _EPSILON:
         raise ValueError(f"{name} must have non-zero length")
     return vector / length
-
-
-def light_directions(
-    angles: Sequence[float] | np.ndarray,
-    forward: Sequence[float] | np.ndarray,
-    up: Sequence[float] | np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Return validated angles and their object-local unit light directions.
-
-    A view-derived forward vector can contain a vertical component.  It is
-    projected onto the plane perpendicular to ``up`` before rotation, matching
-    a horizontal face-light sweep while still accepting artist-set view axes.
-    """
-
-    angle_values = _validated_angles(angles)
-    up_vector = _unit_vector(up, name="up")
-    forward_vector = _unit_vector(forward, name="forward")
-    forward_vector = forward_vector - up_vector * float(
-        np.dot(forward_vector, up_vector)
-    )
-    forward_length = float(np.linalg.norm(forward_vector))
-    if forward_length <= _EPSILON:
-        raise ValueError("forward and up must not be parallel")
-    forward_vector /= forward_length
-
-    radians = np.deg2rad(angle_values)
-    cosine = np.cos(radians)[:, None]
-    sine = np.sin(radians)[:, None]
-    axis_cross_forward = np.cross(up_vector, forward_vector)
-    directions = forward_vector[None, :] * cosine + axis_cross_forward[None, :] * sine
-    directions /= np.linalg.norm(directions, axis=1)[:, None]
-    return angle_values, np.ascontiguousarray(directions, dtype=np.float32)
 
 
 def guide_light_directions(
@@ -186,33 +134,6 @@ def shadow_amount_cutoff(shadow_amount: float) -> float:
     if not np.isfinite(amount) or not 0.0 <= amount <= 100.0:
         raise ValueError("shadow_amount must be in the range 0..100")
     return -0.15 + amount * 0.005
-
-
-def enforce_monotonic_expansion(
-    masks: np.ndarray | Sequence[object],
-    angles: Sequence[float] | np.ndarray,
-) -> np.ndarray:
-    """Return a copy where Light can only expand from front toward each side."""
-
-    values = np.asarray(masks, dtype=np.bool_)
-    if values.ndim != 3 or any(size <= 0 for size in values.shape):
-        raise ValueError("masks must be a non-empty (angle, height, width) array")
-    angle_values = _validated_angles(angles)
-    if angle_values.size != values.shape[0]:
-        raise ValueError(f"expected {values.shape[0]} angles, got {angle_values.size}")
-    result = np.array(values, copy=True, order="C")
-    zero_index = int(
-        np.flatnonzero(
-            np.isclose(angle_values, 0.0, atol=_ANGLE_EPSILON, rtol=0.0)
-        )[0]
-    )
-    for sign in (1, -1):
-        side = np.flatnonzero(angle_values * sign > _ANGLE_EPSILON)
-        side = side[np.argsort(np.abs(angle_values[side]), kind="stable")]
-        sequence = np.concatenate((np.asarray([zero_index], dtype=np.intp), side))
-        for closer, farther in zip(sequence[:-1], sequence[1:]):
-            result[farther] |= result[closer]
-    return result
 
 
 def rasterize_uv_normals(
@@ -299,36 +220,6 @@ def rasterize_uv_normals(
     return np.ascontiguousarray(normal_image), np.ascontiguousarray(occupancy)
 
 
-def bake_normal_sweep(
-    triangle_uvs: np.ndarray | Sequence[object],
-    corner_normals: np.ndarray | Sequence[object],
-    angles: Sequence[float] | np.ndarray,
-    forward: Sequence[float] | np.ndarray,
-    up: Sequence[float] | np.ndarray,
-    width: int,
-    height: int | None = None,
-    *,
-    enforce_monotonic: bool = True,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Bake binary Light masks from evaluated UVs and corner normals.
-
-    This is the exact, dependency-free fallback for the optional native bake.
-    It is intended for correctness and headless testing; dense production
-    meshes should use :func:`quick_sdf_blender.native.bake_normal_sweep` when
-    the version-2 DLL is available.
-    """
-
-    angle_values, directions = light_directions(angles, forward, up)
-    normals, occupancy = rasterize_uv_normals(
-        triangle_uvs, corner_normals, width, height
-    )
-    dots = np.einsum("hwc,ac->ahw", normals, directions, optimize=True)
-    masks = (~occupancy)[None, :] | (dots >= 0.0)
-    if enforce_monotonic:
-        masks = enforce_monotonic_expansion(masks, angle_values)
-    return np.ascontiguousarray(masks), occupancy
-
-
 def bake_face_shadow_guide(
     triangle_uvs: np.ndarray | Sequence[object],
     corner_normals: np.ndarray | Sequence[object],
@@ -364,10 +255,7 @@ def bake_face_shadow_guide(
 
 __all__ = [
     "bake_face_shadow_guide",
-    "bake_normal_sweep",
-    "enforce_monotonic_expansion",
     "guide_light_directions",
-    "light_directions",
     "rasterize_uv_normals",
     "shadow_amount_cutoff",
 ]

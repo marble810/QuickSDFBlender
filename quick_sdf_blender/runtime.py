@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from array import array
 import hashlib
 import math
 import struct
@@ -20,7 +19,7 @@ from .bitplane import (
     encode_bitplane,
     inspect_bitplane_header,
 )
-from .model import DEFAULT_ANGLES, MAX_KEYS_PER_SIDE, SCHEMA_VERSION
+from .model import DEFAULT_KEY_ANGLES, MAX_KEYS_PER_SIDE
 
 
 PROJECT_UUID_KEY = "quick_sdf_project_uuid"
@@ -35,7 +34,6 @@ AUX_MASK_ROLE = "aux_mask"
 THRESHOLD_ROLE = "threshold_preview"
 EXPORT_ADJUSTMENT_ROLE = "export_adjustment_preview"
 PALETTE_NAME = "Quick SDF Light Shadow"
-_PAINT_SNAPSHOTS: dict[str, Any] = {}
 _INTERACTIVE_PAINT_SNAPSHOTS: dict[str, tuple[str, str, Any, str, Any | None]] = {}
 _AUX_PAINT_SNAPSHOTS: dict[str, tuple[str, str, Any]] = {}
 _BASE_BAKE_UUIDS: set[str] = set()
@@ -541,7 +539,7 @@ def create_project_images(project: Any, source: bpy.types.Image | None = None) -
     import numpy as np
 
     resolution = int(project.resolution)
-    for value in DEFAULT_ANGLES:
+    for value in DEFAULT_KEY_ANGLES:
         angle_item = project.angles.add()
         angle_item.uuid = new_uuid()
         angle_item.angle = value
@@ -572,8 +570,6 @@ def create_project_images(project: Any, source: bpy.types.Image | None = None) -
     project.active_side = str(getattr(project, "authoring_side", "RIGHT"))
     if project.angles:
         project.seek_angle = float(project.angles[project.active_angle_index].angle)
-        project.review_angle = project.seek_angle
-    project.schema_version = SCHEMA_VERSION
 
 
 def copy_image_pixels(
@@ -702,95 +698,6 @@ def write_image_rgba8(image: bpy.types.Image, rgba: Any) -> None:
     blender_rows *= 1.0 / 255.0
     blender_rows[..., 3] = 1.0
     _write_blender_rows(image, blender_rows)
-
-
-def initialize_normal_sweep(project: Any) -> None:
-    """Rasterize a lightweight face-normal preview into all angle masks.
-
-    Initialization is intentionally capped at 512 samples per axis and then
-    nearest-neighbour upscaled.  It is an authoring head start, not a shading
-    bake, and remains responsive on production meshes and 4K projects.
-    """
-    import numpy as np
-    from mathutils import Matrix, Vector
-
-    obj = project.target_object
-    if obj is None or obj.type != "MESH":
-        raise ValueError("Normal sweep requires a mesh target")
-    mesh = obj.data
-    uv_layer = mesh.uv_layers.get(project.uv_map_name)
-    if uv_layer is None:
-        raise ValueError("Normal sweep requires the project UV map")
-    size = min(512, int(project.resolution))
-    normal_buffer = np.zeros((size, size, 3), dtype=np.float32)
-    occupied = np.zeros((size, size), dtype=np.bool_)
-    mesh.calc_loop_triangles()
-    for triangle in mesh.loop_triangles:
-        polygon = mesh.polygons[triangle.polygon_index]
-        if polygon.material_index != int(project.material_slot_index):
-            continue
-        uv = [uv_layer.data[index].uv for index in triangle.loops]
-        x = np.asarray([point.x * (size - 1) for point in uv], dtype=np.float64)
-        y = np.asarray([(1.0 - point.y) * (size - 1) for point in uv], dtype=np.float64)
-        x0, x1 = max(0, int(np.floor(x.min()))), min(size - 1, int(np.ceil(x.max())))
-        y0, y1 = max(0, int(np.floor(y.min()))), min(size - 1, int(np.ceil(y.max())))
-        if x1 < x0 or y1 < y0:
-            continue
-        denominator = (y[1] - y[2]) * (x[0] - x[2]) + (x[2] - x[1]) * (y[0] - y[2])
-        if abs(denominator) <= 1e-12:
-            continue
-        grid_y, grid_x = np.mgrid[y0 : y1 + 1, x0 : x1 + 1]
-        weight0 = ((y[1] - y[2]) * (grid_x - x[2]) + (x[2] - x[1]) * (grid_y - y[2])) / denominator
-        weight1 = ((y[2] - y[0]) * (grid_x - x[2]) + (x[0] - x[2]) * (grid_y - y[2])) / denominator
-        weight2 = 1.0 - weight0 - weight1
-        inside = (weight0 >= -1e-6) & (weight1 >= -1e-6) & (weight2 >= -1e-6)
-        if not np.any(inside):
-            continue
-        region = normal_buffer[y0 : y1 + 1, x0 : x1 + 1]
-        region[inside] = tuple(polygon.normal)
-        occupied[y0 : y1 + 1, x0 : x1 + 1][inside] = True
-
-    axis_vectors = {
-        "NEG_X": Vector((-1.0, 0.0, 0.0)),
-        "POS_X": Vector((1.0, 0.0, 0.0)),
-        "NEG_Y": Vector((0.0, -1.0, 0.0)),
-        "POS_Y": Vector((0.0, 1.0, 0.0)),
-        "NEG_Z": Vector((0.0, 0.0, -1.0)),
-        "POS_Z": Vector((0.0, 0.0, 1.0)),
-    }
-    forward = axis_vectors.get(str(project.forward_axis), Vector(project.forward_vector)).normalized()
-    up = axis_vectors.get(str(project.up_axis), Vector(project.up_vector)).normalized()
-    if abs(forward.dot(up)) > 0.999:
-        raise ValueError("Forward and Up axes must be different and perpendicular")
-    project.forward_vector = forward
-    project.up_vector = up
-    masks = []
-    for angle_item in project.angles:
-        signed_angle = float(angle_item.angle)
-        if str(getattr(angle_item, "side", "RIGHT")) == "LEFT":
-            signed_angle = -signed_angle
-        light = Matrix.Rotation(np.deg2rad(signed_angle), 3, up) @ forward
-        dots = normal_buffer @ np.asarray(light, dtype=np.float32)
-        masks.append(~occupied | (dots >= 0.0))
-    masks = np.stack(masks, axis=0)
-    angle_values = np.asarray([float(item.angle) for item in project.angles])
-    sides = np.asarray([str(getattr(item, "side", "RIGHT")) for item in project.angles])
-    for side in ("RIGHT", "LEFT"):
-        indices = np.flatnonzero(sides == side)
-        indices = indices[np.argsort(angle_values[indices], kind="stable")]
-        for closer, farther in zip(indices[:-1], indices[1:]):
-            masks[farther] |= masks[closer]
-
-    resolution = int(project.resolution)
-    if size != resolution:
-        sample = np.minimum(np.arange(resolution) * size // resolution, size - 1)
-        masks = masks[:, sample[:, None], sample[None, :]]
-    for angle_item, mask in zip(project.angles, masks):
-        display = resolve_display_image(project, angle_item)
-        if display is None:
-            continue
-        write_image_gray8(display, mask.astype(np.uint8) * np.uint8(255))
-        set_base_mask(angle_item, mask)
 
 
 def ensure_palette(scene: bpy.types.Scene) -> bpy.types.Palette:
@@ -951,19 +858,6 @@ def image_channel_u16(
     return output
 
 
-def rgba_to_u8(rgba: Any) -> Any:
-    """Quantize normalized RGBA values to the schema's RGBA8 storage."""
-
-    import numpy as np
-
-    values = np.asarray(rgba)
-    if values.ndim != 3 or values.shape[2] != 4:
-        raise ValueError(f"RGBA data must have shape (height, width, 4), got {values.shape}")
-    if values.dtype == np.uint8:
-        return np.array(values, copy=True, order="C")
-    return np.rint(np.clip(values, 0.0, 1.0) * 255.0).astype(np.uint8)
-
-
 def image_rgba8(image: bpy.types.Image) -> Any:
     """Return a compact top-down RGBA8 copy with bounded conversion memory."""
 
@@ -1098,14 +992,6 @@ def write_image_gray8(image: bpy.types.Image, values: Any) -> None:
     cache_image_gray8(image, gray)
 
 
-def capture_paint_snapshot(project: Any) -> None:
-    angle_item = active_angle(project)
-    image = resolve_display_image(project, angle_item) if angle_item is not None else None
-    if image is None:
-        raise ValueError("The active angle image is missing")
-    _PAINT_SNAPSHOTS[str(project.uuid)] = image_rgba(image)
-
-
 def capture_interactive_paint_snapshot(
     project: Any,
     *,
@@ -1196,40 +1082,11 @@ def discard_interactive_paint_snapshot(project: Any) -> None:
     _INTERACTIVE_PAINT_SNAPSHOTS.pop(str(getattr(project, "uuid", "")), None)
 
 
-def has_paint_snapshot(project: Any) -> bool:
-    """Return whether an explicit propagation snapshot is pending."""
-
-    return str(getattr(project, "uuid", "")) in _PAINT_SNAPSHOTS
-
-
-def consume_paint_snapshot(project: Any) -> Any | None:
-    snapshot = _PAINT_SNAPSHOTS.pop(str(project.uuid), None)
-    if snapshot is not None:
-        return snapshot
-    # The script-facing explicit "Propagate" operator cannot read display
-    # alpha as coverage because the display is intentionally opaque. Encode
-    # coverage as a harmless G-channel difference while leaving R (the
-    # baseline mask consumed by that operator) unchanged.
-    angle_item = active_angle(project)
-    display = resolve_display_image(project, angle_item) if angle_item is not None else None
-    if display is None or angle_item is None:
-        return None
-    current = image_rgba(display)
-    covered = coverage_mask(angle_item)
-    if not covered.any():
-        return None
-    synthetic = current.copy()
-    synthetic[..., 1][covered] = 1.0 - synthetic[..., 1][covered]
-    return synthetic
-
-
-def discard_paint_snapshot(project: Any | None = None) -> None:
+def discard_paint_snapshots(project: Any | None = None) -> None:
     if project is None:
-        _PAINT_SNAPSHOTS.clear()
         _INTERACTIVE_PAINT_SNAPSHOTS.clear()
         _AUX_PAINT_SNAPSHOTS.clear()
     else:
-        _PAINT_SNAPSHOTS.pop(str(project.uuid), None)
         _INTERACTIVE_PAINT_SNAPSHOTS.pop(str(project.uuid), None)
         _AUX_PAINT_SNAPSHOTS.pop(str(project.uuid), None)
 
@@ -1247,20 +1104,6 @@ def _project_angle_for_image(image: bpy.types.Image) -> tuple[Any | None, Any | 
                 if str(getattr(angle_item, "uuid", "")) == angle_uuid:
                     return project, angle_item
     return None, None
-
-
-def _coverage_for_display(image: bpy.types.Image) -> Any | None:
-    project, angle_item = _project_angle_for_image(image)
-    if project is None or angle_item is None:
-        return None
-    return angle_item
-
-
-def _base_for_display(image: bpy.types.Image) -> Any | None:
-    project, angle_item = _project_angle_for_image(image)
-    if project is None or angle_item is None:
-        return None
-    return angle_item
 
 
 def materialize_effective_coverage(
@@ -1295,98 +1138,6 @@ def materialize_effective_coverage(
     return added
 
 
-def _mark_coverage(angle_item: Any, region: Any, value: bool) -> None:
-    import numpy as np
-
-    coverage = np.array(coverage_mask(angle_item), copy=True)
-    changed = np.asarray(region, dtype=np.bool_)
-    if changed.shape != coverage.shape:
-        raise ValueError("Override region must match the image dimensions")
-    coverage[changed] = bool(value)
-    set_coverage_mask(angle_item, coverage)
-
-
-def write_mask_overrides(
-    image: bpy.types.Image,
-    mask: Any,
-    override: Any,
-    coverage_item: Any | None = None,
-) -> None:
-    """Write display RGB and mark its separate persistent coverage layer."""
-    import numpy as np
-
-    gray = image_gray8(image)
-    binary = np.asarray(mask, dtype=np.bool_)
-    footprint = np.asarray(override, dtype=np.bool_)
-    if binary.shape != gray.shape or footprint.shape != binary.shape:
-        raise ValueError("Mask and override arrays must match the image dimensions")
-    gray[footprint] = binary[footprint].astype(np.uint8) * np.uint8(255)
-    write_image_gray8(image, gray)
-    coverage_item = coverage_item or _coverage_for_display(image)
-    if coverage_item is not None:
-        _mark_coverage(coverage_item, footprint, True)
-
-
-def restore_image_region(image: bpy.types.Image, snapshot: Any, region: Any) -> None:
-    import numpy as np
-
-    rgba = image_rgba(image)
-    previous = np.asarray(snapshot, dtype=np.float32)
-    changed = np.asarray(region, dtype=np.bool_)
-    if previous.shape != rgba.shape or changed.shape != rgba.shape[:2]:
-        raise ValueError("Snapshot and region must match the image dimensions")
-    rgba[changed] = previous[changed]
-    rgba[..., 3] = 1.0
-    write_image_rgba(image, rgba)
-
-
-def mark_override_region(
-    image: bpy.types.Image,
-    region: Any,
-    coverage_item: Any | None = None,
-) -> None:
-    coverage_item = coverage_item or _coverage_for_display(image)
-    if coverage_item is None:
-        return
-    _mark_coverage(coverage_item, region, True)
-
-
-def project_mask_stack(project: Any) -> tuple[Any, Any]:
-    """Return a signed-stack adapter over the side-local authoring keys.
-
-    A separate LEFT zero-degree key cannot be represented by a signed stack, so the
-    RIGHT zero is used as its shared zero.  New generation code should consume
-    :func:`project_side_stack` instead.
-    """
-    import numpy as np
-
-    entries = []
-    has_right_zero = any(
-        str(getattr(item, "side", "RIGHT")) == "RIGHT"
-        and math.isclose(float(item.angle), 0.0, abs_tol=1.0e-7)
-        for item in project.angles
-    )
-    for angle_item in project.angles:
-        side = str(getattr(angle_item, "side", "RIGHT"))
-        local_angle = abs(float(angle_item.angle))
-        if side == "LEFT" and math.isclose(local_angle, 0.0, abs_tol=1.0e-7) and has_right_zero:
-            continue
-        image = resolve_display_image(project, angle_item)
-        if image is None:
-            raise ValueError(f"Mask image is missing for {angle_item.angle:+g} degrees")
-        signed = -local_angle if side == "LEFT" else local_angle
-        entries.append((signed, image_mask(image)))
-    if not entries:
-        raise ValueError("Project has no angle masks")
-    entries.sort(key=lambda entry: entry[0])
-    values = [entry[0] for entry in entries]
-    masks = [entry[1] for entry in entries]
-    shape = masks[0].shape
-    if any(mask.shape != shape for mask in masks[1:]):
-        raise ValueError("All angle masks must use the same resolution")
-    return np.stack(masks, axis=0), np.asarray(values, dtype=np.float64)
-
-
 def project_side_stack(project: Any, side: str) -> tuple[Any, Any]:
     """Return one 0..90 side without collapsing its independent zero key."""
 
@@ -1409,55 +1160,6 @@ def project_side_stack(project: Any, side: str) -> tuple[Any, Any]:
     return np.stack(masks, axis=0), np.asarray(angles, dtype=np.float64)
 
 
-def project_side_export_layers(project: Any, side: str) -> tuple[Any, Any, Any, Any]:
-    """Copy display, angle, base, and coverage arrays for one export lane.
-
-    This function is deliberately main-thread-only: all ``bpy`` image access is
-    completed here, leaving repair, symmetry, EDT and PNG encoding free to run
-    in a worker without retaining Blender data-block references.
-    """
-
-    import numpy as np
-
-    selected = sorted(
-        (item for item in project.angles if str(getattr(item, "side", "RIGHT")) == side),
-        key=lambda item: float(item.angle),
-    )
-    if not selected:
-        raise ValueError(f"Project has no {side.title()} angle keys")
-    display_layers = []
-    base_layers = []
-    coverage_layers = []
-    angles = []
-    expected_shape = None
-    for item in selected:
-        angle = float(item.angle)
-        display = resolve_display_image(project, item)
-        if display is None:
-            raise ValueError(f"Missing {side.title()} mask at {angle:g} degrees")
-        display_mask = image_mask(display)
-        base_values = base_mask(item)
-        coverage_values = coverage_mask(item)
-        if expected_shape is None:
-            expected_shape = display_mask.shape
-        if (
-            display_mask.shape != expected_shape
-            or base_values.shape != expected_shape
-            or coverage_values.shape != expected_shape
-        ):
-            raise ValueError("All export layers must use the same resolution")
-        display_layers.append(display_mask)
-        base_layers.append(base_values)
-        coverage_layers.append(coverage_values)
-        angles.append(angle)
-    return (
-        np.ascontiguousarray(np.stack(display_layers, axis=0), dtype=np.bool_),
-        np.asarray(angles, dtype=np.float64),
-        np.ascontiguousarray(np.stack(base_layers, axis=0), dtype=np.bool_),
-        np.ascontiguousarray(np.stack(coverage_layers, axis=0), dtype=np.bool_),
-    )
-
-
 def insert_display_bit(
     image: bpy.types.Image,
     bit_index: int,
@@ -1465,7 +1167,7 @@ def insert_display_bit(
     *,
     rows_per_chunk: int = 64,
 ) -> None:
-    """Insert one Display threshold directly into an ABI-7 uint16 bit field."""
+    """Insert one Display threshold directly into a uint16 bit field."""
 
     import numpy as np
 
@@ -1602,59 +1304,6 @@ class PackedLaneSnapshot:
         )
 
 
-def project_side_packed_lane(project: Any, side: str) -> Any:
-    """Synchronously build a compact lane for script/background callers."""
-
-    snapshot = PackedLaneSnapshot(project, side)
-    while not snapshot.done:
-        snapshot.step(project)
-    return snapshot.finish()
-
-
-def project_side_stacks(project: Any, *, island_pairs: Any | None = None) -> tuple[Any, Any, Any, Any]:
-    """Return canonical Right and Left 0..90 stacks for preview/export.
-
-    A mirrored project stores only the authoring lane.  The opposite lane is
-    derived every time this function is called, so paint, rebake, preview and
-    export can never observe a stale "generated side".
-    """
-
-    import numpy as np
-
-    available = {
-        str(getattr(item, "side", "RIGHT"))
-        for item in getattr(project, "angles", ())
-    }
-    linked = bool(getattr(project, "mirror_enabled", True)) and str(
-        getattr(project, "symmetry_mode", "AUTO")
-    ) != "INDEPENDENT"
-    if not linked:
-        right, right_angles = project_side_stack(project, "RIGHT")
-        left, left_angles = project_side_stack(project, "LEFT")
-        return right, right_angles, left, left_angles
-
-    author_side = str(getattr(project, "authoring_side", "RIGHT"))
-    if author_side not in available:
-        author_side = "RIGHT" if "RIGHT" in available else "LEFT"
-    source, source_angles = project_side_stack(project, author_side)
-    mode_name = str(getattr(project, "symmetry_mode", "AUTO"))
-    if mode_name == "AUTO":
-        mode_name = str(getattr(project, "symmetry_candidate", "TEXTURE_MIRROR"))
-    mode_map = {
-        "OVERLAPPED_UV": "OVERLAPPED",
-        "TEXTURE_MIRROR": "TEXTURE_MIRROR",
-        "ISLAND_PAIR": "ISLAND_PAIR",
-    }
-    selected_mode = mode_map.get(mode_name, "TEXTURE_MIRROR")
-    from .symmetry import mirror_side_stack
-
-    mirrored = mirror_side_stack(source, selected_mode, island_pairs=island_pairs)
-    mirrored_angles = np.array(source_angles, copy=True)
-    if author_side == "RIGHT":
-        return source, source_angles, mirrored, mirrored_angles
-    return mirrored, mirrored_angles, source, source_angles
-
-
 def update_threshold_preview(project: Any, rgba16: Any) -> bpy.types.Image:
     import numpy as np
 
@@ -1761,21 +1410,6 @@ def update_export_adjustment_preview(project: Any, heatmap: Any) -> bpy.types.Im
     return image
 
 
-def clear_image_alpha(image: bpy.types.Image) -> None:
-    """Clear separate overrides and restore the current base RGB."""
-    import numpy as np
-
-    angle_item = _coverage_for_display(image)
-    if angle_item is None:
-        raise ValueError("The paint override layers are incomplete")
-    overridden = coverage_mask(angle_item)
-    gray = image_gray8(image)
-    base_values = base_mask(angle_item)
-    gray[overridden] = base_values[overridden].astype(np.uint8) * np.uint8(255)
-    write_image_gray8(image, gray)
-    set_coverage_mask(angle_item, np.zeros(overridden.shape, dtype=np.bool_))
-
-
 def remove_project_images(project: Any) -> None:
     for image in tuple(bpy.data.images):
         if image.get(PROJECT_UUID_KEY) == project.uuid:
@@ -1795,12 +1429,9 @@ _TOPOLOGY_MODIFIERS = {
 }
 
 
-def validate_project(project: Any, *, include_monotonic: bool = True) -> tuple[list[str], list[str], Any | None]:
+def validate_project(project: Any) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
-    report = None
-    if int(getattr(project, "schema_version", -1)) != SCHEMA_VERSION:
-        errors.append(f"Project schema {SCHEMA_VERSION} is required.")
     obj = project.target_object
     if obj is None or obj.type != "MESH":
         errors.append("Target must be a mesh object.")
@@ -1889,30 +1520,10 @@ def validate_project(project: Any, *, include_monotonic: bool = True) -> tuple[l
     for role, label in (("SDF_AREA", "SDF Area"), ("SHADOW_STRENGTH", "Shadow Strength")):
         if aux_roles.get(role, 0) != 1:
             errors.append(f"Project requires exactly one {label} mask.")
-    if include_monotonic and not errors:
-        from .core import validate_monotonic
-
-        masks, angles = project_mask_stack(project)
-        report = validate_monotonic(masks, angles)
-        project.has_violations = not report.is_valid
-        for angle_item in project.angles:
-            angle_item.has_violation = False
-        for first, second, _count in report.offending_transitions:
-            for angle_item in project.angles:
-                signed = abs(float(angle_item.angle))
-                if str(getattr(angle_item, "side", "RIGHT")) == "LEFT":
-                    signed = -signed
-                if math.isclose(signed, first) or math.isclose(signed, second):
-                    angle_item.has_violation = True
-        if not report.is_valid:
-            errors.append(
-                f"Monotonic Guard: {report.violation_pixel_count} pixels violate "
-                f"{report.violation_count} adjacent transitions."
-            )
     project.validation_message = "OK" if not errors else "\n".join(errors)
     project.warning_message = "\n".join(warnings)
     project.diagnostic_message = "\n".join(errors + warnings)
-    return errors, warnings, report
+    return errors, warnings
 
 
 def repair_project_references(scene: bpy.types.Scene) -> None:
@@ -1995,7 +1606,6 @@ def _load_post_transient_cleanup(_unused: Any) -> None:
 def _load_or_undo_post(_unused: Any) -> None:
     global _GRAY_UPLOAD_BUFFER
 
-    _PAINT_SNAPSHOTS.clear()
     _INTERACTIVE_PAINT_SNAPSHOTS.clear()
     _AUX_PAINT_SNAPSHOTS.clear()
     _BITPLANE_CACHE.clear()
@@ -2152,7 +1762,6 @@ def unregister_runtime() -> None:
     global _GRAY_UPLOAD_BUFFER
 
     cleanup_export_adjustment_previews()
-    _PAINT_SNAPSHOTS.clear()
     _INTERACTIVE_PAINT_SNAPSHOTS.clear()
     _AUX_PAINT_SNAPSHOTS.clear()
     try:

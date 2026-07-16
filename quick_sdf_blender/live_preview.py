@@ -23,12 +23,6 @@ def _revision(image: Any) -> int:
     return int(image.get(runtime.IMAGE_REVISION_KEY, 0))
 
 
-def _sample_plane(values: Any, maximum: int = 512):
-    from .preview_cache import resize_nearest
-
-    return resize_nearest(values, maximum).astype("bool", copy=False)
-
-
 def _sample_mask(image: Any, maximum: int = 512):
     from .preview_cache import image_proxy_mask
 
@@ -113,32 +107,28 @@ def _repaired_preview_stack(project: Any, items: list[Any]):
             ],
             axis=0,
         )
+        from .core import pack_lane_bits
+
+        angles = np.asarray(
+            [float(getattr(item, "angle", 0.0)) for item, _display in records],
+            dtype=np.float64,
+        )
+        lane = pack_lane_bits(display_stack, angles, base_stack, coverage_stack)
         try:
             from . import native
 
-            cached = native.repair_side_monotonic(
-                display_stack, base_stack, coverage_stack
-            ).masks
+            repair = native.repair_packed_lane(lane)
         except (ImportError, OSError, AttributeError):
-            from .core import repair_side_monotonic
+            from .core import repair_packed_lane
 
-            cached = repair_side_monotonic(
-                display_stack, base_stack, coverage_stack
-            ).masks
+            repair = repair_packed_lane(lane)
+        cached = (
+            np.arange(lane.count, dtype=np.uint8)[:, None, None]
+            >= repair.transition_indices[None, ...]
+        )
+        cached = np.ascontiguousarray(cached, dtype=np.bool_)
         cached = array_cache_put(cache_key, cached)
     return cached, key
-
-
-def _repaired_sdf(mask: Any, repair_key: tuple[Any, ...], index: int):
-    from .core import exact_signed_edt
-    from .preview_cache import array_cache_get, array_cache_put
-
-    key = ("repaired", repair_key, int(index))
-    result = array_cache_get(key)
-    if result is None:
-        result = exact_signed_edt(mask)
-        result = array_cache_put(key, result)
-    return result
 
 
 def _repaired_sdf_key(repair_key: tuple[Any, ...], index: int) -> tuple[Any, ...]:

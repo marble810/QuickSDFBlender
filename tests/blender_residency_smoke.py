@@ -28,7 +28,7 @@ if str(ROOT) not in sys.path:
 import quick_sdf_blender  # noqa: E402
 from quick_sdf_blender import live_preview, residency, runtime  # noqa: E402
 from quick_sdf_blender.bitplane import BitplaneRole  # noqa: E402
-from quick_sdf_blender.model import DEFAULT_KEY_ANGLES, SCHEMA_VERSION  # noqa: E402
+from quick_sdf_blender.model import DEFAULT_KEY_ANGLES  # noqa: E402
 from quick_sdf_blender.preview_cache import (  # noqa: E402
     cache_statistics,
     image_proxy_mask,
@@ -65,7 +65,6 @@ def _make_project() -> object:
     project = scene.quick_sdf_projects.add()
     project.uuid = PROJECT_UUID
     project.name = "2K Residency Smoke"
-    project.schema_version = SCHEMA_VERSION
     project.resolution = RESOLUTION
     project.authoring_side = "RIGHT"
     project.active_side = "RIGHT"
@@ -105,7 +104,6 @@ def _make_project() -> object:
     project.active_angle_index = ACTIVE_INDEX
     project.active_angle_uuid = project.angles[ACTIVE_INDEX].uuid
     project.seek_angle = float(project.angles[ACTIVE_INDEX].angle)
-    project.review_angle = project.seek_angle
     return project
 
 

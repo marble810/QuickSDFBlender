@@ -23,37 +23,21 @@ except ImportError:  # pragma: no cover
 
 
 def _active_project(scene: Any) -> Any | None:
-    projects = getattr(scene, "quick_sdf_projects", None)
-    if projects is None:
-        projects = getattr(scene, "qsdf_projects", None)
+    projects = scene.quick_sdf_projects
     if not projects:
         return None
-    index = int(getattr(scene, "quick_sdf_active_project_index", getattr(scene, "qsdf_active_project_index", 0)))
+    index = int(scene.quick_sdf_active_project_index)
     return projects[max(0, min(index, len(projects) - 1))]
 
 
 def _project_uuid(project: Any) -> str:
-    value = str(getattr(project, "uuid", "") or "project")
-    return value
+    return str(project.uuid)
 
 
 def _target_object(project: Any) -> Any | None:
     if bpy is None:
         return None
-    target = getattr(project, "target_object", None)
-    if target is None and getattr(project, "target_object_name", ""):
-        target = bpy.data.objects.get(project.target_object_name)
-    return target
-
-
-def _set_project_string(project: Any, name: str, value: str) -> None:
-    try:
-        setattr(project, name, value)
-    except (AttributeError, TypeError):
-        try:
-            project[name] = value
-        except (AttributeError, TypeError):
-            pass
+    return project.target_object
 
 
 if bpy is not None:
@@ -82,7 +66,7 @@ if bpy is not None:
                 ("Shader", "OUTPUT"),
             }
             if required.issubset(sockets):
-                # A user supplied a compatible preview contract. Use it exactly
+                # A user supplied the required preview contract. Use it exactly
                 # as authored instead of destructively rebuilding its nodes.
                 return group
             group = bpy.data.node_groups.get(NODE_GROUP_INTERNAL_NAME)
@@ -142,14 +126,9 @@ if bpy is not None:
         readable while the white/black authoring decision remains obvious.
         """
         uuid = _project_uuid(project)
-        source = getattr(project, "original_material", None)
+        source = project.original_material
         source_name = source.name if source is not None else ""
-        stored_name = getattr(project, "preview_material_name", "")
-        if not stored_name:
-            try:
-                stored_name = project.get("preview_material_name", "")
-            except AttributeError:
-                stored_name = ""
+        stored_name = project.preview_material_name
         material = bpy.data.materials.get(stored_name) if stored_name else None
         if material is not None and str(material.get(SOURCE_MATERIAL_KEY, "")) != source_name:
             # The target slot changed since the last Studio session.  Keeping a
@@ -163,7 +142,7 @@ if bpy is not None:
             material.name = f"{MATERIAL_PREFIX}{uuid[:8]}"
             material[SOURCE_MATERIAL_KEY] = source_name
             material.use_fake_user = False
-            _set_project_string(project, "preview_material_name", material.name)
+            project.preview_material_name = material.name
         material.use_nodes = True
         nodes = material.node_tree.nodes
         links = material.node_tree.links
@@ -196,7 +175,7 @@ if bpy is not None:
         uv_map.name = "QSDF UV Map"
         uv_map.label = "Project UV Map"
         uv_map.location = (-390, -120)
-        uv_map.uv_map = str(getattr(project, "uv_map_name", ""))
+        uv_map.uv_map = str(project.uv_map_name)
         if image is not None:
             texture.image = image
             try:
@@ -233,7 +212,7 @@ if bpy is not None:
             base.location = (80, 180)
             original_socket = base.outputs["BSDF"]
 
-        preview_mode = str(getattr(project, "preview_mode", "OVERLAY"))
+        preview_mode = str(project.preview_mode)
         mix_shader.inputs[0].default_value = 0.35 if preview_mode == "OVERLAY" else 1.0
         if "Light Color" in group_node.inputs and "Shadow Color" in group_node.inputs:
             if preview_mode == "MASK":
@@ -261,7 +240,7 @@ if bpy is not None:
 
 
     def set_preview_image(project: Any, image: Any) -> Any:
-        stored_name = str(getattr(project, "preview_material_name", ""))
+        stored_name = str(project.preview_material_name)
         material = bpy.data.materials.get(stored_name) if stored_name else None
         texture = material.node_tree.nodes.get("QSDF Mask") if material is not None and material.use_nodes else None
         if texture is None:
@@ -292,18 +271,15 @@ if bpy is not None:
         if not uuids:
             return
         for scene in bpy.data.scenes:
-            projects = getattr(scene, "quick_sdf_projects", getattr(scene, "qsdf_projects", ()))
-            for candidate in projects:
-                if _project_uuid(candidate) in uuids and hasattr(candidate, "preview_enabled"):
+            for candidate in scene.quick_sdf_projects:
+                if _project_uuid(candidate) in uuids:
                     candidate.preview_enabled = False
-                    if hasattr(candidate, "material_override_active"):
-                        candidate.material_override_active = False
+                    candidate.material_override_active = False
 
 
     def _project_by_uuid(uuid: str) -> Any | None:
         for scene in bpy.data.scenes:
-            projects = getattr(scene, "quick_sdf_projects", getattr(scene, "qsdf_projects", ()))
-            for candidate in projects:
+            for candidate in scene.quick_sdf_projects:
                 if _project_uuid(candidate) == uuid:
                     return candidate
         return None
@@ -311,10 +287,10 @@ if bpy is not None:
 
     def _entry_material(entry: dict[str, Any]) -> Any | None:
         owner = _project_by_uuid(str(entry.get("uuid", "")))
-        if owner is not None and bool(getattr(owner, "material_override_active", False)):
-            if bool(getattr(owner, "original_material_was_none", False)):
+        if owner is not None and bool(owner.material_override_active):
+            if bool(owner.original_material_was_none):
                 return None
-            pointer = getattr(owner, "original_material", None)
+            pointer = owner.original_material
             if pointer is not None:
                 return pointer
         material_name = str(entry.get("material", ""))
@@ -351,7 +327,7 @@ if bpy is not None:
         obj = _target_object(project)
         if obj is None or obj.type != "MESH":
             raise ValueError("Quick SDF target mesh is unavailable")
-        slot_index = int(getattr(project, "material_slot_index", 0))
+        slot_index = int(project.material_slot_index)
         if not 0 <= slot_index < len(obj.material_slots):
             raise ValueError("Quick SDF material slot is unavailable")
         # A slot has one visible material; allowing preview overrides to stack
@@ -360,11 +336,9 @@ if bpy is not None:
         entries = _load_restore_entries(obj)
         uuid = _project_uuid(project)
         slot = obj.material_slots[slot_index]
-        if hasattr(project, "original_material"):
-            project.original_material = slot.material
-            project.original_material_was_none = slot.material is None
-            project.original_slot_link = slot.link
-            project.material_override_active = True
+        project.original_material = slot.material
+        project.original_material_was_none = slot.material is None
+        project.material_override_active = True
         entries.append(
             {
                 "uuid": uuid,
@@ -377,9 +351,8 @@ if bpy is not None:
         slot.link = "OBJECT"
         material = ensure_preview_material(project, image)
         slot.material = material
-        _set_project_string(project, "preview_material_name", material.name)
-        if hasattr(project, "preview_enabled"):
-            project.preview_enabled = True
+        project.preview_material_name = material.name
+        project.preview_enabled = True
         return material
 
 
@@ -415,7 +388,7 @@ if bpy is not None:
                 restored_uuids.add(str(entry.get("uuid", "")))
             _save_restore_entries(candidate, keep)
         _disable_project_flags(restored_uuids)
-        if project is not None and hasattr(project, "preview_enabled"):
+        if project is not None:
             project.preview_enabled = False
             project.material_override_active = False
         return restored
@@ -527,9 +500,9 @@ if bpy is not None:
             if project is None:
                 return {"CANCELLED"}
             angle_item = None
-            angles = getattr(project, "angles", None)
+            angles = project.angles
             if angles:
-                index = max(0, min(int(getattr(project, "active_angle_index", 0)), len(angles) - 1))
+                index = max(0, min(int(project.active_angle_index), len(angles) - 1))
                 angle_item = angles[index]
             image = (
                 runtime.resolve_display_image(project, angle_item)
@@ -541,8 +514,7 @@ if bpy is not None:
             except ValueError as exc:
                 self.report({"ERROR"}, str(exc))
                 return {"CANCELLED"}
-            if hasattr(project, "preview_enabled"):
-                project.preview_enabled = True
+            project.preview_enabled = True
             return {"FINISHED"}
 
 

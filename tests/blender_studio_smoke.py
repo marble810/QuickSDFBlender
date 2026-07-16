@@ -413,7 +413,7 @@ def check() -> float | None:
             assert bpy.context.scene.tool_settings.image_paint.canvas == snapped_canvas
             assert preview_material.node_tree.nodes["QSDF Mask"].image == material_image
             assert tuple(str(item.uuid) for item in project.angles) == STATE["timeline_key_uuids"]
-            runtime.discard_paint_snapshot(project)
+            runtime.discard_paint_snapshots(project)
             runtime.discard_interactive_paint_snapshot(project)
             studio.restore_stroke_brush(bpy.context)
             STATE["timeline_release_verified"] = True
@@ -569,7 +569,7 @@ def check() -> float | None:
         assert bpy.ops.quicksdf.paint_snapshot() == {"FINISHED"}
         assert not project.onion_enabled
         assert image_area.spaces.active.image == canvas
-        runtime.discard_paint_snapshot(project)
+        runtime.discard_paint_snapshots(project)
         assert obj.material_slots[0].material != STATE["original_material"]
         bpy.ops.screen.screenshot(
             filepath=str(ROOT / "build" / "quick_sdf_studio.png"),
@@ -590,7 +590,7 @@ def check() -> float | None:
             # Blender 5.2 includes Texture Paint images in autosave.  The same
             # save transaction must keep Quick SDF's source data intact and
             # restore the transient Studio material, Canvas, and Onion preview.
-            # Texture Paint image recovery is a Blender 5.2 compatibility path.
+            # Blender 5.2 needs this Texture Paint image recovery path.
             before_autosave = _source_fingerprints(project, runtime)
             assert bpy.ops.wm.save_auto_save() == {"FINISHED"}
             assert _source_fingerprints(project, runtime) == before_autosave
@@ -627,7 +627,7 @@ def check() -> float | None:
         assert str(runtime.active_angle(project).uuid) == edit_uuid
         assert bpy.context.scene.tool_settings.image_paint.canvas == canvas
         assert preview_material.node_tree.nodes["QSDF Mask"].image == canvas
-        runtime.discard_paint_snapshot(project)
+        runtime.discard_paint_snapshots(project)
         assert bpy.ops.quicksdf.seek_set(angle=22.5) == {"FINISHED"}
         invalid_values = (True, False, True, True, True, True, True)
         for index, (item, value) in enumerate(zip(project.angles, invalid_values)):
@@ -690,7 +690,7 @@ def run() -> None:
         original_workspace = bpy.context.window.workspace
         original_material = obj.material_slots[0].material
         bpy.context.scene.quick_sdf_settings.resolution = 512
-        bpy.context.scene.quick_sdf_settings.initialization = "NORMAL_SWEEP"
+        bpy.context.scene.quick_sdf_settings.initialization = "NORMAL_GUIDE"
         bpy.context.scene.frame_set(96)
         bpy.context.scene.tool_settings.image_paint.use_normal_falloff = True
         for area in bpy.context.window.screen.areas:

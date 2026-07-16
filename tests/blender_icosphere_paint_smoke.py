@@ -348,7 +348,6 @@ def _tick() -> float | None:
                 tuple(restored_unified.secondary_color),
             ) == STATE["unified_colours"]
             assert not bpy.app.timers.is_registered(studio._stroke_restore_watchdog)
-            assert project_uuid not in runtime._PAINT_SNAPSHOTS
             assert project_uuid not in runtime._INTERACTIVE_PAINT_SNAPSHOTS
             assert project_uuid not in operator_module._HISTORIES
             assert project_uuid not in operator_module._UNDO_FENCES
@@ -770,7 +769,7 @@ def _start() -> None:
         previous_object_mode = obj.mode
         original_material = obj.material_slots[0].material
         scene.quick_sdf_settings.resolution = 1024
-        scene.quick_sdf_settings.initialization = "NORMAL_SWEEP"
+        scene.quick_sdf_settings.initialization = "NORMAL_GUIDE"
         assert bpy.ops.quicksdf.project_create() == {"FINISHED"}
         project = runtime.active_project(scene)
         assert project is not None

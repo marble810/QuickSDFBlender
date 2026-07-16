@@ -4,7 +4,7 @@ import unittest
 
 import numpy as np
 
-from quick_sdf_blender.core import generate_threshold_pair_channels
+from quick_sdf_blender.core import generate_threshold_transitions, validate_side_monotonic
 from quick_sdf_blender.packing import PackingChannelSpec, PackingSource, pack_rgba16
 from quick_sdf_blender.review import (
     review_current,
@@ -23,9 +23,19 @@ def _review_texture(
     left: np.ndarray,
     left_angles: np.ndarray,
 ) -> np.ndarray:
-    channels = generate_threshold_pair_channels(
-        right, right_angles, left, left_angles
-    )
+    channels = np.empty((*right.shape[1:], 2), dtype=np.uint16)
+    for channel, (masks, angles) in enumerate(
+        ((right, right_angles), (left, left_angles))
+    ):
+        validation = validate_side_monotonic(masks, angles)
+        if not validation.is_valid:
+            raise ValueError("review lane is not monotonic")
+        transitions = np.full(masks.shape[1:], masks.shape[0], dtype=np.uint8)
+        has_light = np.any(masks, axis=0)
+        transitions[has_light] = np.argmax(masks, axis=0)[has_light]
+        generate_threshold_transitions(
+            transitions, angles, out=channels, channel=channel
+        )
     return pack_rgba16(
         {
             PackingSource.RIGHT_THRESHOLD: channels[..., 0],

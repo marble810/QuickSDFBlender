@@ -74,16 +74,6 @@ def _mask_paint_buttons(layout: Any, project: Any) -> None:
     black.value = 0
 
 
-def _operator_property(operator: Any, name: str, value: Any) -> None:
-    """Set an optional operator property without making an in-flight schema fatal."""
-
-    try:
-        if hasattr(operator, name):
-            setattr(operator, name, value)
-    except (AttributeError, ReferenceError, TypeError):
-        pass
-
-
 def _editing_aux_mask_uuid(context: Any, project: Any | None) -> str:
     if project is None:
         return ""
@@ -101,15 +91,15 @@ def _editing_aux_mask_uuid(context: Any, project: Any | None) -> str:
 
 
 def _aux_mask_by_uuid(project: Any, mask_uuid: str) -> Any | None:
-    for mask in getattr(project, "aux_masks", ()):
-        if str(getattr(mask, "uuid", "")) == str(mask_uuid):
+    for mask in project.aux_masks:
+        if str(mask.uuid) == str(mask_uuid):
             return mask
     return None
 
 
 def _active_aux_mask(project: Any) -> Any | None:
-    masks = getattr(project, "aux_masks", ())
-    index = int(getattr(project, "active_aux_mask_index", -1))
+    masks = project.aux_masks
+    index = int(project.active_aux_mask_index)
     if index < 0 or index >= len(masks):
         return None
     return masks[index]
@@ -117,8 +107,8 @@ def _active_aux_mask(project: Any) -> Any | None:
 
 def _packing_channels(project: Any) -> dict[str, Any]:
     result: dict[str, Any] = {}
-    for channel in getattr(project, "packing_channels", ()):
-        output = str(getattr(channel, "output_channel", "")).upper()
+    for channel in project.packing_channels:
+        output = str(channel.output_channel).upper()
         if output in {"R", "G", "B", "A"} and output not in result:
             result[output] = channel
     return result
@@ -127,8 +117,8 @@ def _packing_channels(project: Any) -> dict[str, Any]:
 def _packing_meaning(channel: Any) -> str:
     """Describe the packed black/white result, including inversion."""
 
-    source = str(getattr(channel, "source_type", "")).upper()
-    invert = bool(getattr(channel, "invert", False))
+    source = str(channel.source_type).upper()
+    invert = bool(channel.invert)
     meanings = {
         "RIGHT_THRESHOLD": ("lights late", "lights early"),
         "LEFT_THRESHOLD": ("lights late", "lights early"),
@@ -137,7 +127,7 @@ def _packing_meaning(channel: Any) -> str:
         "CUSTOM_MASK": ("mask off", "mask on"),
     }
     if source == "CONSTANT":
-        value = max(0.0, min(1.0, float(getattr(channel, "constant_value", 0.0))))
+        value = max(0.0, min(1.0, float(channel.constant_value)))
         if invert:
             value = 1.0 - value
         return tr("Constant output: %s") % f"{value:.2f}"
@@ -150,7 +140,7 @@ def _packing_meaning(channel: Any) -> str:
 def _packing_channel_error(project: Any, output: str, channel: Any) -> str:
     """Return an artist-facing error for one visible packing row."""
 
-    source = str(getattr(channel, "source_type", "")).upper()
+    source = str(channel.source_type).upper()
     valid_sources = {
         "RIGHT_THRESHOLD",
         "LEFT_THRESHOLD",
@@ -165,8 +155,8 @@ def _packing_channel_error(project: Any, output: str, channel: Any) -> str:
         item = next(
             (
                 mask
-                for mask in getattr(project, "aux_masks", ())
-                if str(getattr(mask, "role", "")) == source
+                for mask in project.aux_masks
+                if str(mask.role) == source
             ),
             None,
         )
@@ -174,7 +164,7 @@ def _packing_channel_error(project: Any, output: str, channel: Any) -> str:
             return tr("%s: Required mask is missing") % output
     elif source == "CUSTOM_MASK":
         item = _aux_mask_by_uuid(
-            project, str(getattr(channel, "auxiliary_mask_uuid", ""))
+            project, str(channel.auxiliary_mask_uuid)
         )
         if item is None or str(getattr(item, "role", "")) != "CUSTOM":
             return tr("%s: Select a Custom Mask") % output
@@ -187,7 +177,7 @@ def _packing_channel_error(project: Any, output: str, channel: Any) -> str:
     image = runtime.find_aux_mask_image(project, item)
     if image is None:
         return tr("%s: Mask image is missing") % output
-    expected = int(getattr(project, "resolution", 0))
+    expected = int(project.resolution)
     if tuple(map(int, image.size[:])) != (expected, expected):
         return tr("%s: Mask resolution does not match the project") % output
     return ""
@@ -208,7 +198,7 @@ def _draw_aux_edit_status(layout: Any, context: Any, project: Any) -> bool:
         text="Back to Face Shadow",
         icon="LOOP_BACK",
     )
-    _operator_property(back, "mask_uuid", mask_uuid)
+    back.mask_uuid = mask_uuid
     return True
 
 
@@ -233,12 +223,12 @@ class QSDF_UL_aux_masks(bpy.types.UIList):
             layout.alignment = "CENTER"
             layout.label(text="", icon="IMAGE_DATA")
             return
-        role = str(getattr(item, "role", "CUSTOM"))
-        if role == "CUSTOM" and hasattr(item, "name"):
+        role = str(item.role)
+        if role == "CUSTOM":
             layout.prop(item, "name", text="", emboss=False, icon="IMAGE_DATA")
         else:
             layout.label(
-                text=str(getattr(item, "name", "")) or tr(role.replace("_", " ").title()),
+                text=str(item.name) or tr(role.replace("_", " ").title()),
                 icon="IMAGE_DATA",
             )
 
@@ -485,7 +475,7 @@ class QSDF_PT_output_packing(bpy.types.Panel):
         if project is None:
             return
 
-        customized = bool(getattr(project, "packing_customized", False))
+        customized = bool(project.packing_customized)
         header = layout.row(align=True)
         header.label(
             text="Packing: Custom — This Project" if customized else "Packing: lilToon",
@@ -499,12 +489,12 @@ class QSDF_PT_output_packing(bpy.types.Panel):
         channels = _packing_channels(project)
         output_counts = {
             output: sum(
-                str(getattr(item, "output_channel", "")).upper() == output
-                for item in getattr(project, "packing_channels", ())
+                str(item.output_channel).upper() == output
+                for item in project.packing_channels
             )
             for output in "RGBA"
         }
-        if not hasattr(project, "packing_channels") or not channels:
+        if not channels:
             warning = layout.box()
             warning.alert = True
             warning.label(
@@ -536,17 +526,13 @@ class QSDF_PT_output_packing(bpy.types.Panel):
 
             controls = row.row(align=True)
             controls.enabled = customized
-            if hasattr(channel, "source_type"):
-                controls.prop(channel, "source_type", text="")
-            else:
-                controls.label(text=str(getattr(channel, "source_type", "")))
-            if hasattr(channel, "invert"):
-                controls.prop(
-                    channel,
-                    "invert",
-                    text="Invert" if bool(getattr(channel, "invert", False)) else "Direct",
-                    toggle=True,
-                )
+            controls.prop(channel, "source_type", text="")
+            controls.prop(
+                channel,
+                "invert",
+                text="Invert" if bool(channel.invert) else "Direct",
+                toggle=True,
+            )
 
             preview_row = row.row(align=True)
             preview_row.enabled = _studio_active(context, project)
@@ -555,36 +541,31 @@ class QSDF_PT_output_packing(bpy.types.Panel):
                 text="Preview",
                 icon="HIDE_OFF",
             )
-            _operator_property(preview, "output_channel", output)
+            preview.output_channel = output
 
-            source = str(getattr(channel, "source_type", "")).upper()
+            source = str(channel.source_type).upper()
             if source == "CUSTOM_MASK":
                 mask_row = box.row(align=True)
                 mask_row.enabled = customized
-                if hasattr(channel, "auxiliary_mask_uuid"):
-                    selected = _aux_mask_by_uuid(
-                        project, str(getattr(channel, "auxiliary_mask_uuid", ""))
-                    )
-                    mask_row.label(
-                        text=str(getattr(selected, "name", ""))
-                        or tr("No Custom Mask Selected"),
-                        icon="IMAGE_DATA",
-                    )
-                    active_mask = _active_aux_mask(project)
-                    assign_row = mask_row.row(align=True)
-                    assign_row.enabled = bool(
-                        customized
-                        and active_mask is not None
-                        and str(getattr(active_mask, "role", "")) == "CUSTOM"
-                    )
-                    assign = assign_row.operator(
-                        "quicksdf.packing_assign_active_mask",
-                        text="Use Selected Mask",
-                    )
-                    _operator_property(assign, "output_channel", output)
-                else:
-                    mask_row.label(text="Add a Custom Mask first.", icon="INFO")
-            elif source == "CONSTANT" and hasattr(channel, "constant_value"):
+                selected = _aux_mask_by_uuid(project, str(channel.auxiliary_mask_uuid))
+                mask_row.label(
+                    text=str(getattr(selected, "name", ""))
+                    or tr("No Custom Mask Selected"),
+                    icon="IMAGE_DATA",
+                )
+                active_mask = _active_aux_mask(project)
+                assign_row = mask_row.row(align=True)
+                assign_row.enabled = bool(
+                    customized
+                    and active_mask is not None
+                    and str(getattr(active_mask, "role", "")) == "CUSTOM"
+                )
+                assign = assign_row.operator(
+                    "quicksdf.packing_assign_active_mask",
+                    text="Use Selected Mask",
+                )
+                assign.output_channel = output
+            elif source == "CONSTANT":
                 value_row = box.row(align=True)
                 value_row.enabled = customized
                 value_row.prop(channel, "constant_value", text="Constant", slider=True)
@@ -602,7 +583,7 @@ class QSDF_PT_output_packing(bpy.types.Panel):
             text="Preview Packed RGB",
             icon="IMAGE_RGB",
         )
-        _operator_property(preview, "output_channel", "RGB")
+        preview.output_channel = "RGB"
 
 
 class QSDF_PT_additional_masks(bpy.types.Panel):
@@ -629,19 +610,10 @@ class QSDF_PT_additional_masks(bpy.types.Panel):
         else:
             layout.label(text="These masks are shared by every angle.", icon="INFO")
 
-        if not hasattr(project, "aux_masks"):
-            warning = layout.box()
-            warning.alert = True
-            warning.label(
-                text="Additional mask data is not available for this project.",
-                icon="ERROR",
-            )
-            return
-
-        masks = list(getattr(project, "aux_masks", ()))
+        masks = list(project.aux_masks)
         if not masks:
             layout.label(text="No additional masks.", icon="INFO")
-        if masks and hasattr(project, "active_aux_mask_index"):
+        if masks:
             list_row = layout.row()
             list_row.template_list(
                 "QSDF_UL_aux_masks",
@@ -662,9 +634,7 @@ class QSDF_PT_additional_masks(bpy.types.Panel):
             )
             remove = delete_row.operator("quicksdf.aux_mask_delete", text="", icon="REMOVE")
             if active_for_delete is not None:
-                _operator_property(
-                    remove, "mask_uuid", str(getattr(active_for_delete, "uuid", ""))
-                )
+                remove.mask_uuid = str(active_for_delete.uuid)
         else:
             layout.operator(
                 "quicksdf.aux_mask_add",
@@ -693,20 +663,20 @@ class QSDF_PT_additional_masks(bpy.types.Panel):
             image_row.label(text=tr("Image: %s") % image_name, icon="IMAGE")
 
         edit = box.operator("quicksdf.aux_mask_edit", text="Edit Mask", icon="BRUSH_DATA")
-        _operator_property(edit, "mask_uuid", mask_uuid)
+        edit.mask_uuid = mask_uuid
         actions = box.row(align=True)
         import_op = actions.operator(
             "quicksdf.aux_mask_import",
             text="Import from Image",
             icon="IMPORT",
         )
-        _operator_property(import_op, "mask_uuid", mask_uuid)
+        import_op.mask_uuid = mask_uuid
         white = actions.operator("quicksdf.aux_mask_fill", text="Fill White")
-        _operator_property(white, "mask_uuid", mask_uuid)
-        _operator_property(white, "value", 1.0)
+        white.mask_uuid = mask_uuid
+        white.value = 1.0
         black = actions.operator("quicksdf.aux_mask_fill", text="Fill Black")
-        _operator_property(black, "mask_uuid", mask_uuid)
-        _operator_property(black, "value", 0.0)
+        black.mask_uuid = mask_uuid
+        black.value = 0.0
 
         if role == "SDF_AREA":
             reset = box.operator(
@@ -714,7 +684,7 @@ class QSDF_PT_additional_masks(bpy.types.Panel):
                 text="Reset SDF Area from UV",
                 icon="UV",
             )
-            _operator_property(reset, "mask_uuid", mask_uuid)
+            reset.mask_uuid = mask_uuid
 
 
 class QSDF_PT_image_studio(bpy.types.Panel):
@@ -738,7 +708,7 @@ class QSDF_PT_image_studio(bpy.types.Panel):
 
 
 def register_draw_handlers() -> None:
-    # Timeline and tool overlays own their dedicated handlers in schema v2.
+    # Timeline and tool overlays own their dedicated handlers.
     return None
 
 

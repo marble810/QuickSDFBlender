@@ -5,7 +5,7 @@ import unittest
 import numpy as np
 
 from quick_sdf_blender.core import (
-    generate_threshold_pair_channels,
+    generate_threshold_transitions,
     validate_side_monotonic,
 )
 from quick_sdf_blender.smart_paint import (
@@ -19,6 +19,29 @@ from quick_sdf_blender.smart_paint import (
 
 
 ANGLES = np.arange(0.0, 91.0, 15.0)
+
+
+def _threshold_pair(
+    right: np.ndarray,
+    right_angles: np.ndarray,
+    left: np.ndarray,
+    left_angles: np.ndarray,
+) -> np.ndarray:
+    channels = np.empty((*right.shape[1:], 2), dtype=np.uint16)
+    for name, channel, masks, angles in (
+        ("right", 0, right, right_angles),
+        ("left", 1, left, left_angles),
+    ):
+        validation = validate_side_monotonic(masks, angles)
+        if not validation.is_valid:
+            raise ValueError(f"{name} mask lane is not monotonic")
+        transitions = np.full(masks.shape[1:], masks.shape[0], dtype=np.uint8)
+        has_light = np.any(masks, axis=0)
+        transitions[has_light] = np.argmax(masks, axis=0)[has_light]
+        generate_threshold_transitions(
+            transitions, angles, out=channels, channel=channel
+        )
+    return channels
 
 
 class SmartPaintTests(unittest.TestCase):
@@ -103,7 +126,7 @@ class SmartPaintTests(unittest.TestCase):
         np.testing.assert_array_equal(light, [[False, True, False, False, False]])
         np.testing.assert_array_equal(shadow, [[False, False, True, False, False]])
 
-    def test_streamed_patches_match_compatibility_stack_result(self):
+    def test_streamed_patches_match_reference_stack_result(self):
         rng = np.random.default_rng(617)
         masks = rng.integers(0, 2, (len(ANGLES), 9, 11), dtype=np.uint8).astype(bool)
         # Start from a valid monotonic stack.
@@ -152,7 +175,7 @@ class ThresholdPairChannelTests(unittest.TestCase):
         left = np.zeros_like(right)
         right[:, 0, 0] = True
         left[:, 1, 1] = True
-        channels = generate_threshold_pair_channels(right, ANGLES, left, ANGLES)
+        channels = _threshold_pair(right, ANGLES, left, ANGLES)
         self.assertEqual(channels.shape, (2, 2, 2))
         self.assertEqual(int(channels[0, 0, 0]), 65535)
         self.assertEqual(int(channels[0, 0, 1]), 0)
@@ -165,7 +188,7 @@ class ThresholdPairChannelTests(unittest.TestCase):
         masks[1:, 0, 0] = True
         masks[2:, 0, 1] = True
         masks[3:, 0, 2] = True
-        channels = generate_threshold_pair_channels(masks, angles, masks, angles)
+        channels = _threshold_pair(masks, angles, masks, angles)
         self.assertTrue(1 <= int(channels[0, 0, 0]) <= 65534)
         self.assertTrue(1 <= int(channels[0, 1, 0]) <= 65534)
         self.assertTrue(1 <= int(channels[0, 2, 0]) <= 65534)
@@ -174,7 +197,7 @@ class ThresholdPairChannelTests(unittest.TestCase):
         masks = np.zeros((len(ANGLES), 1, 1), dtype=np.bool_)
         masks[2, 0, 0] = True
         with self.assertRaisesRegex(ValueError, "right mask lane"):
-            generate_threshold_pair_channels(
+            _threshold_pair(
                 masks, ANGLES, np.zeros_like(masks), ANGLES
             )
 

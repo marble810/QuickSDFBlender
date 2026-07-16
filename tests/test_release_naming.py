@@ -1,4 +1,4 @@
-"""Release-facing naming and compatibility invariants for Quick SDF Paint."""
+"""Release-facing naming and packaging invariants for Quick SDF Paint."""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ class ReleaseNamingTests(unittest.TestCase):
         self.assertEqual(bl_info["version"], (0, 7, 2))
         self.assertIn("threshold map", bl_info["description"].lower())
 
-    def test_old_product_name_is_only_the_workspace_migration_alias(self) -> None:
+    def test_current_sources_use_quick_sdf_paint_name(self) -> None:
         occurrences: list[tuple[str, int]] = []
         for path in ADDON.rglob("*"):
             if path.suffix not in {".py", ".toml", ".md"}:
@@ -50,12 +50,7 @@ class ReleaseNamingTests(unittest.TestCase):
             ):
                 if "Quick SDF Studio" in line:
                     occurrences.append((path.relative_to(ADDON).as_posix(), line_number))
-        self.assertEqual(len(occurrences), 1, occurrences)
-        self.assertEqual(occurrences[0][0], "studio.py")
-        legacy_line = (ADDON / "studio.py").read_text(encoding="utf-8").splitlines()[
-            occurrences[0][1] - 1
-        ]
-        self.assertIn("LEGACY_WORKSPACE_BASENAMES", legacy_line)
+        self.assertEqual(occurrences, [])
 
     def test_public_sources_do_not_present_face_sdf_as_the_output(self) -> None:
         violations: list[str] = []
@@ -78,13 +73,11 @@ class ReleaseNamingTests(unittest.TestCase):
         self.assertLess(export, terminology)
         self.assertLess(terminology, development)
 
-    def test_internal_compatibility_versions_remain_unchanged(self) -> None:
-        model_source = (ADDON / "model.py").read_text(encoding="utf-8")
-        self.assertIn("SCHEMA_VERSION = 6", model_source)
+    def test_bundled_native_uses_current_abi(self) -> None:
         installed_smoke = (ROOT / "tests" / "blender_installed_extension_smoke.py").read_text(
             encoding="utf-8"
         )
-        self.assertIn("native.version() == 7", installed_smoke)
+        self.assertIn("native.version() == 8", installed_smoke)
 
 
 if __name__ == "__main__":

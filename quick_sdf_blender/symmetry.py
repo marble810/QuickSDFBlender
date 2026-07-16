@@ -19,7 +19,6 @@ from typing import Mapping, Sequence
 import numpy as np
 
 
-_ANGLE_EPSILON = 1.0e-7
 
 
 class SymmetryMode(str, Enum):
@@ -153,24 +152,6 @@ def analyze_symmetry(
         overlap_score=overlap_score,
         requires_confirmation=confidence < confirmation_threshold,
     )
-
-
-def _validated_stack_and_angles(
-    mask_stack: np.ndarray | Sequence[object],
-    angles: Sequence[float] | np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    masks = np.asarray(mask_stack)
-    if masks.ndim != 3 or any(size <= 0 for size in masks.shape):
-        raise ValueError("mask_stack must be a non-empty (angle, height, width) array")
-    angle_values = np.asarray(angles, dtype=np.float64)
-    if angle_values.ndim != 1 or angle_values.size != masks.shape[0]:
-        raise ValueError(f"expected {masks.shape[0]} angles, got shape {angle_values.shape}")
-    if not np.all(np.isfinite(angle_values)):
-        raise ValueError("angles must be finite")
-    sorted_angles = np.sort(angle_values)
-    if sorted_angles.size > 1 and np.any(np.diff(sorted_angles) <= _ANGLE_EPSILON):
-        raise ValueError("angles must be unique")
-    return masks, angle_values
 
 
 def _coerce_pair(pair: IslandPairLike, shape: tuple[int, int]) -> IslandPair:
@@ -343,132 +324,10 @@ def mirror_side_layer(
     return np.ascontiguousarray(target)
 
 
-def mirror_side_stack(
-    source_stack: np.ndarray | Sequence[object],
-    mode: SymmetryMode | str,
-    island_pairs: Sequence[IslandPairLike] | None = None,
-    target_template: np.ndarray | Sequence[object] | None = None,
-    *,
-    source_occupancy: np.ndarray | Sequence[object] | None = None,
-    target_occupancy: np.ndarray | Sequence[object] | None = None,
-) -> np.ndarray:
-    """Generate an opposite-side stack while preserving source angle order."""
-
-    source = np.asarray(source_stack)
-    if source.ndim < 3 or any(size <= 0 for size in source.shape[:3]):
-        raise ValueError("source_stack must have shape (angle, height, width, ...)")
-    template = None if target_template is None else np.asarray(target_template)
-    if template is not None and (template.shape != source.shape or template.dtype != source.dtype):
-        raise ValueError("target_template must match source_stack shape and dtype")
-    layers = [
-        mirror_side_layer(
-            source[index],
-            mode,
-            island_pairs,
-            None if template is None else template[index],
-            source_occupancy=source_occupancy,
-            target_occupancy=target_occupancy,
-        )
-        for index in range(source.shape[0])
-    ]
-    return np.ascontiguousarray(np.stack(layers, axis=0))
-
-
-def _angle_pairs(angles: np.ndarray) -> tuple[tuple[int, int], ...]:
-    """Return ``(positive_source, negative_target)`` indices."""
-
-    result: list[tuple[int, int]] = []
-    for negative_index in np.flatnonzero(angles < -_ANGLE_EPSILON):
-        matches = np.flatnonzero(
-            np.isclose(
-                angles,
-                -float(angles[negative_index]),
-                atol=_ANGLE_EPSILON,
-                rtol=0.0,
-            )
-        )
-        if matches.size != 1:
-            raise ValueError(
-                f"negative angle {angles[negative_index]:g} has no matching positive source"
-            )
-        result.append((int(matches[0]), int(negative_index)))
-    return tuple(result)
-
-
-def apply_symmetry_to_stack(
-    mask_stack: np.ndarray | Sequence[object],
-    angles: Sequence[float] | np.ndarray,
-    mode: SymmetryMode | str,
-    island_pairs: Sequence[IslandPairLike] | None = None,
-) -> np.ndarray:
-    """Generate negative-angle masks from matching positive-angle masks.
-
-    The returned stack is a copy with the same dtype and source order.  Positive
-    and zero-degree masks are never modified.  ``INDEPENDENT`` is therefore a
-    simple copy.  ``AUTO`` analyzes the union occupancy of ``island_pairs`` when
-    supplied, otherwise it treats the farthest matched angle masks as occupancy
-    hints; its recommendation is then applied deterministically.
-    """
-
-    masks, angle_values = _validated_stack_and_angles(mask_stack, angles)
-    selected_mode = _as_mode(mode)
-    output = np.array(masks, copy=True, order="C")
-    if selected_mode is SymmetryMode.INDEPENDENT:
-        return output
-
-    pairs = _validated_pairs(island_pairs, masks.shape[1:])
-    angle_pairs = _angle_pairs(angle_values)
-    if not angle_pairs:
-        return output
-
-    if selected_mode is SymmetryMode.AUTO:
-        if pairs:
-            positive_occupancy = np.logical_or.reduce(
-                [pair.source_mask for pair in pairs]
-            )
-            negative_occupancy = np.logical_or.reduce(
-                [pair.target_mask for pair in pairs]
-            )
-        else:
-            positive_index, negative_index = max(
-                angle_pairs, key=lambda indices: abs(float(angle_values[indices[0]]))
-            )
-            positive_occupancy = masks[positive_index] != 0
-            negative_occupancy = masks[negative_index] != 0
-        selected_mode = analyze_symmetry(
-            positive_occupancy, negative_occupancy
-        ).suggested_mode
-        if selected_mode is SymmetryMode.INDEPENDENT and pairs:
-            # Explicitly paired islands are stronger evidence than a weak
-            # whole-texture match, and provide a safe local fallback.
-            selected_mode = SymmetryMode.ISLAND_PAIR
-        if selected_mode is SymmetryMode.INDEPENDENT:
-            return output
-
-    if selected_mode is SymmetryMode.ISLAND_PAIR and not pairs:
-        raise ValueError("ISLAND_PAIR symmetry requires island_pairs")
-
-    for positive_index, negative_index in angle_pairs:
-        source = masks[positive_index]
-        if selected_mode is SymmetryMode.OVERLAPPED:
-            output[negative_index] = source
-        elif selected_mode is SymmetryMode.TEXTURE_MIRROR:
-            output[negative_index] = source[:, ::-1]
-        elif selected_mode is SymmetryMode.ISLAND_PAIR:
-            target = output[negative_index]
-            for pair in pairs:
-                _bbox_local_mirror_into(source, target, pair)
-        else:  # Defensive: all public modes are handled above.
-            raise RuntimeError(f"unhandled symmetry mode: {selected_mode.value}")
-    return output
-
-
 __all__ = [
     "IslandPair",
     "SymmetryAnalysis",
     "SymmetryMode",
     "analyze_symmetry",
-    "apply_symmetry_to_stack",
     "mirror_side_layer",
-    "mirror_side_stack",
 ]

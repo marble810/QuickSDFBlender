@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Transient Quick SDF Paint session and workspace management.
 
-The persistent project model deliberately does not contain an ``author_active``
-flag.  A Studio session belongs to one Blender window and is valid only for the
-current process.  This keeps save/load and undo from resurrecting half-active
+A Studio session belongs to one Blender window and is valid only for the
+current process. This keeps save/load and undo from resurrecting half-active
 paint state.
 """
 
@@ -23,7 +22,6 @@ WORKSPACE_PROJECT_TAG = "quick_sdf_studio_project_uuid"
 WORKSPACE_VERSION_TAG = "quick_sdf_studio_layout_version"
 WORKSPACE_LAYOUT_VERSION = 2
 WORKSPACE_BASENAME = "Quick SDF Paint"
-LEGACY_WORKSPACE_BASENAMES = frozenset({"Quick SDF Studio"})
 TIMELINE_HEIGHT = 104
 TIMELINE_SPACE_TYPE = "NODE_EDITOR"
 PROVISIONAL_DISPLAY_ROLE = "provisional_display"
@@ -158,7 +156,7 @@ def resolve_session_project(session: StudioSession | None = None) -> Any | None:
         return None
     for scene in bpy.data.scenes:
         for project in getattr(scene, "quick_sdf_projects", ()):
-            if str(getattr(project, "uuid", "")) == session.project_uuid:
+            if str(project.uuid) == session.project_uuid:
                 return project
     return None
 
@@ -166,18 +164,18 @@ def resolve_session_project(session: StudioSession | None = None) -> Any | None:
 def _resolve_project_uuid(project_uuid: str) -> Any | None:
     for scene in bpy.data.scenes:
         for project in getattr(scene, "quick_sdf_projects", ()):
-            if str(getattr(project, "uuid", "")) == str(project_uuid):
+            if str(project.uuid) == str(project_uuid):
                 return project
     return None
 
 
 def _project_location(project: Any) -> tuple[Any, int] | tuple[None, None]:
-    project_uuid = str(getattr(project, "uuid", ""))
+    project_uuid = str(project.uuid)
     if not project_uuid:
         return None, None
     for scene in bpy.data.scenes:
         for index, candidate in enumerate(getattr(scene, "quick_sdf_projects", ())):
-            if str(getattr(candidate, "uuid", "")) == project_uuid:
+            if str(candidate.uuid) == project_uuid:
                 return scene, index
     return None, None
 
@@ -199,15 +197,15 @@ def _preflight_studio_target(context: Any, project: Any) -> tuple[Any, int, Any,
     context_scene = getattr(context, "scene", None)
     if context_scene is None or scene.as_pointer() != context_scene.as_pointer():
         raise StudioError("Open the target scene before editing this Quick SDF project")
-    obj = getattr(project, "target_object", None)
+    obj = project.target_object
     if obj is None or getattr(obj, "type", "") != "MESH":
         raise StudioError("The Quick SDF target must be a local mesh")
     if obj.name not in context.view_layer.objects:
         raise StudioError("The Quick SDF target is not visible in the current View Layer")
-    slot_index = int(getattr(project, "material_slot_index", 0))
+    slot_index = int(project.material_slot_index)
     if not 0 <= slot_index < len(obj.material_slots):
         raise StudioError("The Quick SDF material slot is unavailable")
-    uv_name = str(getattr(project, "uv_map_name", ""))
+    uv_name = str(project.uv_map_name)
     if not uv_name or getattr(obj.data, "uv_layers", None) is None or obj.data.uv_layers.get(uv_name) is None:
         raise StudioError("The Quick SDF UV map is unavailable")
     _index, item = _resolve_paint_key(project)
@@ -221,31 +219,26 @@ def _preflight_studio_target(context: Any, project: Any) -> tuple[Any, int, Any,
     return scene, int(index), obj, image
 
 
-def _side_signed_angle(project: Any, item: Any) -> float:
-    angle = float(getattr(item, "angle", 0.0))
-    return -angle if str(getattr(item, "side", getattr(project, "authoring_side", "RIGHT"))) == "LEFT" else angle
-
-
 def _resolve_paint_key(
     project: Any,
     *,
     key_uuid: str = "",
     index: int = -1,
 ) -> tuple[int, Any] | tuple[None, None]:
-    angles = getattr(project, "angles", ())
+    angles = project.angles
     if key_uuid:
         for candidate_index, item in enumerate(angles):
-            if str(getattr(item, "uuid", "")) == str(key_uuid):
+            if str(item.uuid) == str(key_uuid):
                 return candidate_index, item
     if 0 <= int(index) < len(angles):
         return int(index), angles[int(index)]
-    active_uuid = str(getattr(project, "active_angle_uuid", ""))
+    active_uuid = str(project.active_angle_uuid)
     if active_uuid:
         for candidate_index, item in enumerate(angles):
-            if str(getattr(item, "uuid", "")) == active_uuid:
+            if str(item.uuid) == active_uuid:
                 return candidate_index, item
     if angles:
-        active_index = max(0, min(int(getattr(project, "active_angle_index", 0)), len(angles) - 1))
+        active_index = max(0, min(int(project.active_angle_index), len(angles) - 1))
         return active_index, angles[active_index]
     return None, None
 
@@ -266,26 +259,24 @@ def select_paint_key(
     resolved_index, item = _resolve_paint_key(project, key_uuid=key_uuid, index=index)
     if item is None or resolved_index is None:
         return False
-    angle = float(getattr(item, "angle", 0.0))
+    angle = float(item.angle)
     project.active_angle_index = resolved_index
-    project.active_angle_uuid = str(getattr(item, "uuid", ""))
-    if hasattr(project, "active_side"):
-        project.active_side = str(getattr(item, "side", getattr(project, "authoring_side", "RIGHT")))
+    project.active_angle_uuid = str(item.uuid)
+    project.active_side = str(item.side)
     project.seek_angle = angle
-    project.review_angle = _side_signed_angle(project, item)
 
     session = active_session(context)
     if (
         session is not None
-        and session.project_uuid == str(getattr(project, "uuid", ""))
+        and session.project_uuid == str(project.uuid)
         and session.editing_aux_mask_uuid
     ):
         return False
-    if session is not None and session.project_uuid == str(getattr(project, "uuid", "")):
+    if session is not None and session.project_uuid == str(project.uuid):
         leave_export_adjustment_review(project, session=session)
         ensure_studio_material_preview(context, session=session)
         session.view_mode = "EDIT"
-        session.paint_key_uuid = str(getattr(item, "uuid", ""))
+        session.paint_key_uuid = str(item.uuid)
         session.paint_key_angle = angle
         session.seek_angle = angle
         session.projection_hint = ""
@@ -306,7 +297,7 @@ def enter_aux_mask_edit(context: Any, project: Any, mask_uuid: str) -> bool:
     """Switch both paint surfaces to one angle-independent project mask."""
 
     session = active_session(context)
-    if session is None or session.project_uuid != str(getattr(project, "uuid", "")):
+    if session is None or session.project_uuid != str(project.uuid):
         raise StudioError("Open Quick SDF Paint before editing an additional mask")
     discard_provisional(context, project)
     from . import runtime
@@ -317,13 +308,9 @@ def enter_aux_mask_edit(context: Any, project: Any, mask_uuid: str) -> bool:
         raise StudioError("The selected additional mask is missing")
     leave_export_adjustment_review(project, session=session)
     if not session.editing_aux_mask_uuid:
-        session.aux_previous_preview_mode = str(
-            getattr(project, "preview_mode", "OVERLAY")
-        )
-        session.aux_previous_onion_enabled = bool(
-            getattr(project, "onion_enabled", False)
-        )
-    if bool(getattr(project, "onion_enabled", False)):
+        session.aux_previous_preview_mode = str(project.preview_mode)
+        session.aux_previous_onion_enabled = bool(project.onion_enabled)
+    if bool(project.onion_enabled):
         project.onion_enabled = False
     session.editing_aux_mask_uuid = str(item.uuid)
     session.view_mode = "AUX_MASK"
@@ -336,8 +323,7 @@ def enter_aux_mask_edit(context: Any, project: Any, mask_uuid: str) -> bool:
         ),
         0,
     )
-    if hasattr(project, "preview_mode"):
-        project.preview_mode = "MASK"
+    project.preview_mode = "MASK"
     image = runtime.sync_canvas(context, project)
     if image is None:
         raise StudioError("The additional mask could not be used as a paint canvas")
@@ -353,20 +339,20 @@ def leave_aux_mask_edit(context: Any, project: Any) -> bool:
     """Return from an angle-independent mask to the stored face-shadow key."""
 
     session = active_session(context)
-    if session is None or session.project_uuid != str(getattr(project, "uuid", "")):
+    if session is None or session.project_uuid != str(project.uuid):
         return False
     if not session.editing_aux_mask_uuid:
         return select_paint_key(
             context,
             project,
             key_uuid=session.paint_key_uuid,
-            index=int(getattr(project, "active_angle_index", 0)),
+            index=int(project.active_angle_index),
         )
     session.editing_aux_mask_uuid = ""
     session.view_mode = "EDIT"
-    if session.aux_previous_preview_mode and hasattr(project, "preview_mode"):
+    if session.aux_previous_preview_mode:
         project.preview_mode = session.aux_previous_preview_mode
-    if session.aux_previous_onion_enabled and hasattr(project, "onion_enabled"):
+    if session.aux_previous_onion_enabled:
         project.onion_enabled = True
     session.aux_previous_preview_mode = ""
     session.aux_previous_onion_enabled = False
@@ -374,7 +360,7 @@ def leave_aux_mask_edit(context: Any, project: Any) -> bool:
         context,
         project,
         key_uuid=session.paint_key_uuid,
-        index=int(getattr(project, "active_angle_index", 0)),
+        index=int(project.active_angle_index),
     )
 
 
@@ -382,7 +368,7 @@ def show_export_adjustment_review(context: Any, project: Any, image: Any) -> boo
     """Show an export-only heatmap without leaving a paint surface armed."""
 
     session = active_session(context)
-    if session is None or session.project_uuid != str(getattr(project, "uuid", "")):
+    if session is None or session.project_uuid != str(project.uuid):
         return False
     window = find_window(session.window_pointer)
     if window is None:
@@ -630,7 +616,7 @@ def _publish_provisional_result(job: dict[str, Any], result: tuple[Any, Any, Any
     # at the provisional angle before deriving Coverage so Boundary-only pixels
     # cannot accidentally become permanent paint when the key is promoted.
     generated = base
-    if getattr(project, "boundary_tracks", None):
+    if project.boundary_tracks:
         from .boundary import evaluate_boundary_mask
 
         generated = evaluate_boundary_mask(
@@ -723,11 +709,11 @@ def settle_seek(context: Any, project: Any, angle: float) -> float:
         session.seek_angle = value
         tag_studio_redraw()
         return value
-    mode = str(getattr(project, "symmetry_mode", "AUTO"))
+    mode = str(project.symmetry_mode)
     side = str(
-        getattr(project, "active_side", "RIGHT")
+        project.active_side
         if mode == "INDEPENDENT"
-        else getattr(project, "authoring_side", "RIGHT")
+        else project.authoring_side
     )
     items = _provisional_lane(project, side)
     if not items:
@@ -889,7 +875,6 @@ def promote_provisional_after_stroke(context: Any, project: Any) -> Any:
     project.active_angle_uuid = provisional_uuid
     project.active_side = provisional_side
     project.seek_angle = provisional_angle
-    project.review_angle = _side_signed_angle(project, item)
     runtime.tag_image(image, str(project.uuid), provisional_uuid, runtime.DISPLAY_ROLE)
     tag_studio_redraw()
     return project.angles[index]
@@ -999,14 +984,12 @@ def seek_preview(
         discard_provisional(context, project)
     if (
         session is not None
-        and session.project_uuid == str(getattr(project, "uuid", ""))
+        and session.project_uuid == str(project.uuid)
         and session.editing_aux_mask_uuid
     ):
-        return float(getattr(project, "seek_angle", value))
+        return float(project.seek_angle)
     project.seek_angle = value
-    sign = -1.0 if str(getattr(project, "authoring_side", "RIGHT")) == "LEFT" else 1.0
-    project.review_angle = sign * value
-    if session is not None and session.project_uuid == str(getattr(project, "uuid", "")):
+    if session is not None and session.project_uuid == str(project.uuid):
         ensure_studio_material_preview(context, session=session)
         session.view_mode = "PREVIEW"
         session.seek_angle = value
@@ -1035,7 +1018,7 @@ def back_to_paint(context: Any, project: Any) -> bool:
     session = active_session(context)
     if (
         session is not None
-        and session.project_uuid == str(getattr(project, "uuid", ""))
+        and session.project_uuid == str(project.uuid)
         and session.provisional_uuid
     ):
         if session.provisional_state == "READY" and not session.provisional_promoting:
@@ -1047,14 +1030,14 @@ def back_to_paint(context: Any, project: Any) -> bool:
             return False
     if (
         session is not None
-        and session.project_uuid == str(getattr(project, "uuid", ""))
+        and session.project_uuid == str(project.uuid)
         and session.editing_aux_mask_uuid
     ):
         from .runtime import sync_canvas
 
         return sync_canvas(context, project) is not None
-    if session is not None and session.project_uuid == str(getattr(project, "uuid", "")):
-        active_uuid = str(getattr(project, "active_angle_uuid", ""))
+    if session is not None and session.project_uuid == str(project.uuid):
+        active_uuid = str(project.active_angle_uuid)
         canvas = getattr(context.scene.tool_settings.image_paint, "canvas", None)
         canvas_uuid = str(canvas.get("quick_sdf_angle_uuid", "")) if canvas is not None else ""
         # The common paint path is already synchronized. Re-selecting the key
@@ -1067,10 +1050,10 @@ def back_to_paint(context: Any, project: Any) -> bool:
             and not session.export_review_active
         ):
             return True
-    key_uuid = session.paint_key_uuid if session is not None else str(getattr(project, "active_angle_uuid", ""))
+    key_uuid = session.paint_key_uuid if session is not None else str(project.active_angle_uuid)
     if select_paint_key(context, project, key_uuid=key_uuid):
         return True
-    return select_paint_key(context, project, index=int(getattr(project, "active_angle_index", 0)))
+    return select_paint_key(context, project, index=int(project.active_angle_index))
 
 
 def reconcile_view_state(context: Any | None = None) -> bool:
@@ -1129,7 +1112,7 @@ def prepare_stroke_brush(context: Any, project: Any) -> None:
     brush = getattr(image_paint, "brush", None)
     session.stroke_from_view3d = getattr(getattr(context, "area", None), "type", "") == "VIEW_3D"
     session.projection_hint = ""
-    value = 1.0 if int(getattr(project, "paint_value", 0)) else 0.0
+    value = 1.0 if int(project.paint_value) else 0.0
     inverse = 1.0 - value
     unified = getattr(image_paint, "unified_paint_settings", None)
     if unified is not None:
@@ -1162,7 +1145,7 @@ def prepare_stroke_brush(context: Any, project: Any) -> None:
             session.stroke_unified_use_color = None
             session.stroke_unified_color = None
             session.stroke_unified_secondary_color = None
-    # Compatibility fallback for Blender builds without unified colour.
+    # Blender 5.1 exposes brush colour through the Brush instead.
     if brush is None:
         return
     session.stroke_brush_name = str(getattr(brush, "name", ""))
@@ -1285,7 +1268,7 @@ def _stroke_restore_watchdog() -> float | None:
                 image = bpy.data.images.get(str(image_name))
                 if image is not None:
                     runtime.write_image_rgba8(image, before_rgba)
-            runtime.discard_paint_snapshot(project)
+            runtime.discard_paint_snapshots(project)
         except (
             AttributeError,
             ImportError,
@@ -1322,20 +1305,20 @@ def _release_project_history(project: Any | None = None) -> None:
             clear_histories()
         else:
             clear_histories(
-                str(getattr(project, "uuid", "")),
+                str(project.uuid),
                 release_fence=True,
             )
     except (AttributeError, ImportError, ReferenceError, RuntimeError):
         pass
 
 
-def _discard_project_paint_snapshot(project: Any | None) -> None:
+def _discard_project_paint_snapshots(project: Any | None) -> None:
     if project is None:
         return
     try:
-        from .runtime import discard_paint_snapshot
+        from .runtime import discard_paint_snapshots
 
-        discard_paint_snapshot(project)
+        discard_paint_snapshots(project)
     except (AttributeError, ImportError, ReferenceError, RuntimeError):
         pass
 
@@ -1383,27 +1366,19 @@ def _valid_studio_layout(workspace: Any) -> bool:
     )
 
 
-def _migrate_workspace_name(workspace: Any) -> Any:
-    """Rename a tagged legacy workspace without replacing its data-block."""
-
-    name = str(getattr(workspace, "name", ""))
-    is_legacy = any(
-        name == legacy or name.startswith(f"{legacy}.")
-        for legacy in LEGACY_WORKSPACE_BASENAMES
-    )
-    if is_legacy:
-        workspace.name = WORKSPACE_BASENAME
-    return workspace
-
-
 def find_studio_workspace(project_uuid: str) -> Any | None:
     for workspace in bpy.data.workspaces:
+        name = str(getattr(workspace, "name", ""))
+        has_current_name = name == WORKSPACE_BASENAME or name.startswith(
+            f"{WORKSPACE_BASENAME}."
+        )
         if (
-            workspace.get(WORKSPACE_PROJECT_TAG) == project_uuid
+            has_current_name
+            and workspace.get(WORKSPACE_PROJECT_TAG) == project_uuid
             and int(workspace.get(WORKSPACE_VERSION_TAG, 0)) == WORKSPACE_LAYOUT_VERSION
             and _valid_studio_layout(workspace)
         ):
-            return _migrate_workspace_name(workspace)
+            return workspace
     return None
 
 
@@ -1807,9 +1782,9 @@ def _restore_preview(project: Any | None) -> None:
 def _assign_preview(project: Any, image: Any | None) -> None:
     from .preview import assign_preview_material, set_preview_image
 
-    obj = getattr(project, "target_object", None)
-    slot_index = int(getattr(project, "material_slot_index", -1))
-    material_name = str(getattr(project, "preview_material_name", ""))
+    obj = project.target_object
+    slot_index = int(project.material_slot_index)
+    material_name = str(project.preview_material_name)
     material = bpy.data.materials.get(material_name) if material_name else None
     if (
         obj is not None
@@ -1987,7 +1962,7 @@ def _rollback_pending(error: BaseException | None = None) -> None:
         except (AttributeError, ReferenceError):
             pass
     restore_stroke_brush(session=session)
-    _discard_project_paint_snapshot(project)
+    _discard_project_paint_snapshots(project)
     _cancel_stroke_watchdog()
     _release_project_history(project)
     if window is None:
@@ -2062,13 +2037,12 @@ def _continue_enter() -> float | None:
             _index, active_item = _resolve_paint_key(project)
             if active_item is not None:
                 session.view_mode = "EDIT"
-                session.paint_key_uuid = str(getattr(active_item, "uuid", ""))
-                session.paint_key_angle = float(getattr(active_item, "angle", 0.0))
+                session.paint_key_uuid = str(active_item.uuid)
+                session.paint_key_angle = float(active_item.angle)
                 session.seek_angle = session.paint_key_angle
                 project.seek_angle = session.paint_key_angle
-                project.review_angle = _side_signed_angle(project, active_item)
-            session.show_first_stroke_hint = not bool(getattr(project, "first_stroke_complete", False))
-            if str(getattr(project, "base_source", "NORMAL_GUIDE")) == "NORMAL_GUIDE":
+            session.show_first_stroke_hint = not bool(project.first_stroke_complete)
+            if str(project.base_source) == "NORMAL_GUIDE":
                 session.first_hint_text = (
                     "A light-sweep guide from rear oblique to full light is ready. "
                     "Paint only the areas you want to adjust. Paint between keys to add that angle."
@@ -2088,7 +2062,7 @@ def _continue_enter() -> float | None:
             _PENDING = None
             from .operators import arm_undo_fence
 
-            arm_undo_fence(str(getattr(project, "uuid", "")))
+            arm_undo_fence(str(project.uuid))
             tag_studio_redraw()
             return None
     except Exception as error:
@@ -2122,10 +2096,10 @@ def _configure_session_target(
     if window is None or workspace is None:
         raise StudioError("The Quick SDF Paint workspace is no longer available")
     window.workspace = workspace
-    workspace[WORKSPACE_PROJECT_TAG] = str(getattr(project, "uuid", ""))
+    workspace[WORKSPACE_PROJECT_TAG] = str(project.uuid)
     workspace[WORKSPACE_VERSION_TAG] = WORKSPACE_LAYOUT_VERSION
     scene.quick_sdf_active_project_index = project_index
-    session.project_uuid = str(getattr(project, "uuid", ""))
+    session.project_uuid = str(project.uuid)
     session.scene_name = scene.name
     _ensure_session_timeline_host(session)
 
@@ -2137,8 +2111,8 @@ def _configure_session_target(
     if not select_paint_key(
         context,
         project,
-        key_uuid=str(getattr(project, "active_angle_uuid", "")),
-        index=int(getattr(project, "active_angle_index", 0)),
+        key_uuid=str(project.active_angle_uuid),
+        index=int(project.active_angle_index),
     ):
         raise StudioError("The active angle image could not be used as a paint canvas")
     _mode_set(context, window, view_area, "TEXTURE_PAINT")
@@ -2166,7 +2140,7 @@ def _focus_or_switch_studio(context: Any, project: Any) -> StudioSession:
     if context_window is None or context_window.as_pointer() != session.window_pointer:
         raise StudioError("Quick SDF Paint is open in another Blender window")
 
-    target_uuid = str(getattr(project, "uuid", ""))
+    target_uuid = str(project.uuid)
     if not target_uuid:
         raise StudioError("The Quick SDF project has no UUID")
     _preflight_studio_target(context, project)
@@ -2210,8 +2184,8 @@ def _focus_or_switch_studio(context: Any, project: Any) -> StudioSession:
         "export_review_active": session.export_review_active,
     }
     old_workspace_tag = str(workspace.get(WORKSPACE_PROJECT_TAG, ""))
-    target_obj = getattr(project, "target_object", None)
-    old_obj = getattr(old_project, "target_object", None)
+    target_obj = project.target_object
+    old_obj = old_project.target_object
     switched = False
     try:
         window.workspace = workspace
@@ -2220,9 +2194,9 @@ def _focus_or_switch_studio(context: Any, project: Any) -> StudioSession:
         _cancel_stroke_watchdog()
         _restore_preview(old_project)
         try:
-            from .runtime import discard_paint_snapshot
+            from .runtime import discard_paint_snapshots
 
-            discard_paint_snapshot(old_project)
+            discard_paint_snapshots(old_project)
         except (AttributeError, ImportError, ReferenceError, RuntimeError):
             pass
         try:
@@ -2238,11 +2212,11 @@ def _focus_or_switch_studio(context: Any, project: Any) -> StudioSession:
         session.seek_angle = 0.0
         session.projection_hint = ""
         session.export_review_active = False
-        session.show_first_stroke_hint = not bool(getattr(project, "first_stroke_complete", False))
+        session.show_first_stroke_hint = not bool(project.first_stroke_complete)
         session.first_hint_text = (
             "A light-sweep guide from rear oblique to full light is ready. "
             "Paint only the areas you want to adjust. Paint between keys to add that angle."
-            if str(getattr(project, "base_source", "NORMAL_GUIDE")) == "NORMAL_GUIDE"
+            if str(project.base_source) == "NORMAL_GUIDE"
             else "Choose an angle · choose Light or Shadow · paint"
         )
         _configure_session_target(context, session, project, frame_content=True)
@@ -2250,7 +2224,7 @@ def _focus_or_switch_studio(context: Any, project: Any) -> StudioSession:
         _release_project_history(old_project)
         from .operators import arm_undo_fence
 
-        arm_undo_fence(str(getattr(project, "uuid", "")))
+        arm_undo_fence(str(project.uuid))
         tag_studio_redraw()
         return session
     except Exception as error:
@@ -2337,7 +2311,7 @@ def _queue_studio_switch(context: Any, project: Any) -> StudioSession:
     workspace = bpy.data.workspaces.get(session.workspace_name)
     if window is None or workspace is None:
         raise StudioError("The Quick SDF Paint workspace is no longer available")
-    _SWITCH_PENDING = _PendingSwitch(str(getattr(project, "uuid", "")))
+    _SWITCH_PENDING = _PendingSwitch(str(project.uuid))
     window.workspace = workspace
     if not bpy.app.timers.is_registered(_continue_switch):
         bpy.app.timers.register(_continue_switch, first_interval=0.01)
@@ -2353,7 +2327,7 @@ def open_or_switch_studio(
     """Artist-facing entry point: open, refocus, or switch in one action."""
 
     global _PENDING
-    target_uuid = str(getattr(project, "uuid", ""))
+    target_uuid = str(project.uuid)
     if _PENDING is not None:
         if _PENDING.session.project_uuid == target_uuid:
             window = find_window(_PENDING.session.window_pointer)
@@ -2388,7 +2362,7 @@ def enter_studio(
     _SWITCH_PENDING = None
     if bpy.app.background or getattr(context, "window", None) is None:
         raise StudioUnavailableError("Quick SDF Paint requires an interactive Blender window")
-    project_uuid = str(getattr(project, "uuid", ""))
+    project_uuid = str(project.uuid)
     if not project_uuid:
         raise StudioError("The Quick SDF project has no UUID")
     if _SESSION is not None:
@@ -2397,7 +2371,7 @@ def enter_studio(
         if _PENDING.session.project_uuid == project_uuid:
             return _PENDING.session
         raise StudioBusyError("Quick SDF Paint is already opening")
-    obj = getattr(project, "target_object", None)
+    obj = project.target_object
     if obj is None or getattr(obj, "type", "") != "MESH":
         raise StudioError("The Quick SDF target must be a local mesh")
     window = context.window
@@ -2465,15 +2439,15 @@ def exit_studio(
     _remove_timeline_hosts()
     if project is not None and session.editing_aux_mask_uuid:
         session.editing_aux_mask_uuid = ""
-        if session.aux_previous_preview_mode and hasattr(project, "preview_mode"):
+        if session.aux_previous_preview_mode:
             project.preview_mode = session.aux_previous_preview_mode
-        if session.aux_previous_onion_enabled and hasattr(project, "onion_enabled"):
+        if session.aux_previous_onion_enabled:
             project.onion_enabled = True
         session.aux_previous_preview_mode = ""
         session.aux_previous_onion_enabled = False
     _restore_preview(project)
     restore_stroke_brush(session=session)
-    _discard_project_paint_snapshot(project)
+    _discard_project_paint_snapshots(project)
     _cancel_stroke_watchdog()
     _release_project_history(project)
     scene = bpy.data.scenes.get(session.scene_name) or getattr(window, "scene", None)
@@ -2489,7 +2463,7 @@ def exit_studio(
         return True
     studio_workspace = bpy.data.workspaces.get(session.workspace_name)
     try:
-        target = getattr(project, "target_object", None) if project else None
+        target = project.target_object if project else None
         view_area = next((area for area in window.screen.areas if area.type == "VIEW_3D"), None)
         if target is not None and view_area is not None and target.mode == "TEXTURE_PAINT":
             context.view_layer.objects.active = target
@@ -2554,7 +2528,6 @@ def _save_pre(_unused: Any) -> None:
         project is not None
         and _SESSION.editing_aux_mask_uuid
         and _SESSION.aux_previous_preview_mode
-        and hasattr(project, "preview_mode")
     ):
         # Aux edit mode is transient; save the artist's normal preview choice.
         project.preview_mode = _SESSION.aux_previous_preview_mode
@@ -2562,11 +2535,11 @@ def _save_pre(_unused: Any) -> None:
     window = find_window(_SESSION.window_pointer)
     scene = bpy.data.scenes.get(_SESSION.scene_name) or getattr(window, "scene", None)
     restore_stroke_brush(session=_SESSION)
-    _discard_project_paint_snapshot(project)
+    _discard_project_paint_snapshots(project)
     _cancel_stroke_watchdog()
     _restore_projection_settings(scene, _SESSION, window)
     if project is not None:
-        _SESSION.onion_suspended = bool(getattr(project, "onion_enabled", False))
+        _SESSION.onion_suspended = bool(project.onion_enabled)
         if _SESSION.onion_suspended:
             project.onion_enabled = False
         try:
@@ -2589,7 +2562,7 @@ def _save_post(_unused: Any) -> None:
             window = find_window(_SESSION.window_pointer)
             scene = bpy.data.scenes.get(_SESSION.scene_name) or getattr(window, "scene", None)
             if window is not None and scene is not None:
-                _apply_projection_settings(scene, _SESSION, window, getattr(project, "target_object", None))
+                _apply_projection_settings(scene, _SESSION, window, project.target_object)
             from .runtime import (
                 active_angle,
                 aux_mask_for_uuid,
@@ -2598,8 +2571,7 @@ def _save_post(_unused: Any) -> None:
             )
 
             if _SESSION.editing_aux_mask_uuid:
-                if hasattr(project, "preview_mode"):
-                    project.preview_mode = "MASK"
+                project.preview_mode = "MASK"
                 aux_item = aux_mask_for_uuid(project, _SESSION.editing_aux_mask_uuid)
                 image = resolve_aux_mask_image(project, aux_item)
             else:
@@ -2646,12 +2618,12 @@ def _load_pre(_unused: Any) -> None:
         project = resolve_session_project(_SESSION)
         discard_provisional(bpy.context, project)
         if project is not None and _SESSION.editing_aux_mask_uuid:
-            if _SESSION.aux_previous_preview_mode and hasattr(project, "preview_mode"):
+            if _SESSION.aux_previous_preview_mode:
                 project.preview_mode = _SESSION.aux_previous_preview_mode
-            if _SESSION.aux_previous_onion_enabled and hasattr(project, "onion_enabled"):
+            if _SESSION.aux_previous_onion_enabled:
                 project.onion_enabled = True
         restore_stroke_brush(session=_SESSION)
-        _discard_project_paint_snapshot(project)
+        _discard_project_paint_snapshots(project)
         _cancel_stroke_watchdog()
         _restore_projection_settings(scene, _SESSION, window)
     try:
@@ -2692,7 +2664,7 @@ def _undo_post(_unused: Any) -> None:
             if project is not None:
                 from .operators import arm_undo_fence
 
-                arm_undo_fence(str(getattr(project, "uuid", "")))
+                arm_undo_fence(str(project.uuid))
         except (AttributeError, ImportError, ReferenceError, RuntimeError, ValueError):
             pass
 

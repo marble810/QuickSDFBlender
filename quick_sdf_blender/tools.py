@@ -60,18 +60,16 @@ def _draw_tool_settings(context: Any, layout: Any, _tool: Any) -> None:
             "quicksdf.paint_value_set",
             text="White" if editing_aux_uuid else "Light",
             icon="RADIOBUT_ON" if editing_aux_uuid else "LIGHT_SUN",
-            depress=int(getattr(project, "paint_value", 0)) == 1,
+            depress=int(project.paint_value) == 1,
         )
         light.value = 1
         shadow = row.operator(
             "quicksdf.paint_value_set",
             text="Black" if editing_aux_uuid else "Shadow",
             icon="RADIOBUT_OFF" if editing_aux_uuid else "SHADING_SOLID",
-            depress=int(getattr(project, "paint_value", 0)) == 0,
+            depress=int(project.paint_value) == 0,
         )
         shadow.value = 0
-    elif hasattr(project, "paint_value"):
-        row.prop(project, "paint_value", text="Light / Shadow")
 
     if editing_aux_uuid:
         try:
@@ -85,26 +83,18 @@ def _draw_tool_settings(context: Any, layout: Any, _tool: Any) -> None:
             back = row.operator(
                 "quicksdf.aux_mask_back", text="Back to Face Shadow", icon="LOOP_BACK"
             )
-            if hasattr(back, "mask_uuid"):
-                back.mask_uuid = editing_aux_uuid
+            back.mask_uuid = editing_aux_uuid
     else:
         row.separator()
     if not editing_aux_uuid and _operator_exists("quicksdf.mirror_toggle"):
         row.operator(
             "quicksdf.mirror_toggle", text="Mirror On", icon="MOD_MIRROR",
-            depress=bool(getattr(project, "mirror_enabled", False)),
+            depress=bool(project.mirror_enabled),
         )
-    elif not editing_aux_uuid and hasattr(project, "mirror_enabled"):
-        row.prop(project, "mirror_enabled", text="Mirror On", toggle=True, icon="MOD_MIRROR")
 
-    display_prop = "preview_mode" if hasattr(project, "preview_mode") else (
-        "review_mode" if hasattr(project, "review_mode") else ""
-    )
-    if display_prop and not editing_aux_uuid:
-        row.prop(project, display_prop, text="")
-    if not editing_aux_uuid and getattr(getattr(context, "area", None), "type", "") == "IMAGE_EDITOR" and hasattr(
-        project, "onion_enabled"
-    ):
+    if not editing_aux_uuid:
+        row.prop(project, "preview_mode", text="")
+    if not editing_aux_uuid and getattr(getattr(context, "area", None), "type", "") == "IMAGE_EDITOR":
         row.prop(project, "onion_enabled", text="Onion", toggle=True, icon="IMAGE_ALPHA")
 
     row.separator()
@@ -115,7 +105,7 @@ def _draw_tool_settings(context: Any, layout: Any, _tool: Any) -> None:
     if preparing_auto_key and _operator_exists("quicksdf.cancel_auto_key"):
         row.label(text="Preparing angle", icon="TIME")
         row.operator("quicksdf.cancel_auto_key", text="Cancel", icon="CANCEL")
-    elif bool(getattr(project, "job_running", False)) and _operator_exists("quicksdf.cancel_job"):
+    elif bool(project.job_running) and _operator_exists("quicksdf.cancel_job"):
         row.operator("quicksdf.cancel_job", text="Cancel", icon="CANCEL")
     elif _operator_exists("quicksdf.export_texture"):
         row.operator("quicksdf.export_texture", text="Export Threshold Map", icon="EXPORT")

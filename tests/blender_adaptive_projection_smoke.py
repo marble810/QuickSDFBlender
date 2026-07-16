@@ -1,6 +1,6 @@
 """Blender 5.1/5.2 GUI regression for Projection Paint on an adaptive key.
 
-This test deliberately combines the two paths that older smoke tests kept
+This test deliberately combines the two paths that focused smoke tests keep
 separate: a session-only interpolated angle and Blender's real
 ``PAINT_OT_image_paint`` operator.  It protects against a generated provisional
 Image falling back to its black ``generated_color`` when it becomes the active

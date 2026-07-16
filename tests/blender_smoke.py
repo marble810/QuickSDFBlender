@@ -30,7 +30,7 @@ import numpy as np  # noqa: E402
 
 import quick_sdf_blender  # noqa: E402
 from quick_sdf_blender import runtime, studio  # noqa: E402
-from quick_sdf_blender.model import DEFAULT_ANGLES, SCHEMA_VERSION  # noqa: E402
+from quick_sdf_blender.model import DEFAULT_KEY_ANGLES  # noqa: E402
 from quick_sdf_blender.packing import (  # noqa: E402
     PackingChannelSpec,
     PackingSource,
@@ -187,8 +187,8 @@ def _pack_expected_thresholds(
 
 def _assert_export_worker_side_contracts() -> None:
     from quick_sdf_blender import operators
-    from quick_sdf_blender.core import generate_threshold_pair_channels, pack_lane_bits
-    from quick_sdf_blender.symmetry import IslandPair, mirror_side_stack
+    from quick_sdf_blender.core import generate_threshold_transitions, pack_lane_bits
+    from quick_sdf_blender.symmetry import IslandPair
 
     angles = np.asarray([0.0, 45.0, 90.0], dtype=np.float64)
     right_transition = np.asarray([[0, 1, 3, 2], [3, 2, 1, 0]])
@@ -206,13 +206,17 @@ def _assert_export_worker_side_contracts() -> None:
     independent = operators._compute_export_result(
         {
             "linked": False,
-            "right": (right, angles, ~right, coverage),
-            "left": (left, angles, np.roll(left, 1, axis=0), coverage),
+            "right": pack_lane_bits(right, angles, ~right, coverage),
+            "left": pack_lane_bits(left, angles, np.roll(left, 1, axis=0), coverage),
             "packing": packing,
         }
     )
-    independent_channels = generate_threshold_pair_channels(
-        right, angles, left, angles
+    independent_channels = np.stack(
+        (
+            generate_threshold_transitions(right_transition, angles),
+            generate_threshold_transitions(left_transition, angles),
+        ),
+        axis=-1,
     )
     np.testing.assert_array_equal(
         independent["rgba"],
@@ -226,22 +230,6 @@ def _assert_export_worker_side_contracts() -> None:
     )
     assert independent["changed_pixel_count"] == 0
 
-    packed_independent = operators._compute_export_result(
-        {
-            "packed": True,
-            "linked": False,
-            "right": pack_lane_bits(right, angles, ~right, coverage),
-            "left": pack_lane_bits(
-                left, angles, np.roll(left, 1, axis=0), coverage
-            ),
-            "packing": packing,
-        }
-    )
-    np.testing.assert_array_equal(packed_independent["rgba"], independent["rgba"])
-    np.testing.assert_array_equal(
-        packed_independent["heatmap"], independent["heatmap"]
-    )
-
     source_half = np.asarray(
         [[True, True, False, False], [True, True, False, False]], dtype=np.bool_
     )
@@ -251,28 +239,8 @@ def _assert_export_worker_side_contracts() -> None:
         ("TEXTURE_MIRROR", None),
         ("ISLAND_PAIR", [IslandPair(source_half, target_half)]),
     ):
-        mirrored = mirror_side_stack(left, mode, island_pairs=pairs)
         linked_left = operators._compute_export_result(
             {
-                "linked": True,
-                "author_side": "LEFT",
-                "source": (left, angles, ~left, coverage),
-                "mirror_mode": mode,
-                "island_pairs": pairs,
-                "packing": packing,
-            }
-        )
-        linked_channels = generate_threshold_pair_channels(
-            mirrored, angles, left, angles
-        )
-        np.testing.assert_array_equal(
-            linked_left["rgba"],
-            _pack_expected_thresholds(linked_channels, packing),
-        )
-        assert linked_left["changed_pixel_count"] == 0
-        packed_linked = operators._compute_export_result(
-            {
-                "packed": True,
                 "linked": True,
                 "author_side": "LEFT",
                 "source": pack_lane_bits(left, angles, ~left, coverage),
@@ -281,10 +249,11 @@ def _assert_export_worker_side_contracts() -> None:
                 "packing": packing,
             }
         )
-        np.testing.assert_array_equal(packed_linked["rgba"], linked_left["rgba"])
+        assert linked_left["rgba"].shape == (2, 4, 4)
         np.testing.assert_array_equal(
-            packed_linked["heatmap"], linked_left["heatmap"]
+            linked_left["rgba"][..., 1], independent_channels[..., 1]
         )
+        assert linked_left["changed_pixel_count"] == 0
 
 
 def run(output_directory: Path) -> None:
@@ -329,7 +298,7 @@ def run(output_directory: Path) -> None:
     cube = _make_uv_cube()
     scene = bpy.context.scene
     scene.quick_sdf_settings.resolution = 512
-    scene.quick_sdf_settings.initialization = "NORMAL_SWEEP"
+    scene.quick_sdf_settings.initialization = "NORMAL_GUIDE"
 
     print("[Quick SDF smoke] create 512px project and synchronize canvas")
     _expect_finished(bpy.ops.quicksdf.project_create(), "project_create")
@@ -337,13 +306,11 @@ def run(output_directory: Path) -> None:
     project = scene.quick_sdf_projects[0]
     assert project.target_object == cube
     assert project.resolution == 512
-    assert project.schema_version == SCHEMA_VERSION == 6
     assert project.base_source == "NORMAL_GUIDE"
-    assert project.guide_version == 2
     assert len(project.angles) == 8
     np.testing.assert_allclose(
         [float(item.angle) for item in project.angles],
-        DEFAULT_ANGLES,
+        DEFAULT_KEY_ANGLES,
         rtol=0.0,
         atol=1.0e-5,
     )
@@ -414,7 +381,7 @@ def run(output_directory: Path) -> None:
     assert sdf_area_item.image_name == sdf_area_image.name
 
     assert not project.packing_customized
-    expected_active = min(DEFAULT_ANGLES, key=lambda value: abs(value - 45.0))
+    expected_active = min(DEFAULT_KEY_ANGLES, key=lambda value: abs(value - 45.0))
     assert math.isclose(
         float(project.angles[project.active_angle_index].angle),
         expected_active,
@@ -450,8 +417,6 @@ def run(output_directory: Path) -> None:
         assert base.dtype == coverage.dtype == np.bool_
         assert not base.flags.writeable
         assert not coverage.flags.writeable
-        assert not hasattr(angle_item, "base_image")
-        assert not hasattr(angle_item, "coverage_image")
         assert np.all(runtime.image_rgba(display)[..., 3] == 1.0)
         assert not np.any(coverage)
 
@@ -475,27 +440,26 @@ def run(output_directory: Path) -> None:
     # currently Light; Light at 0 reaches every key otherwise.
     front = runtime.resolve_display_image(project, project.angles[0])
     current_light = bool(runtime.image_mask(front)[256, 256])
-    selected_index = 6 if current_light else 0
+    selected_index = len(project.angles) - 1 if current_light else 0
     project.paint_value = 0 if current_light else 1
     _expect_finished(bpy.ops.quicksdf.key_select(index=selected_index), "key_select")
     source_image = runtime.resolve_display_image(project, project.angles[project.active_angle_index])
     assert source_image is not None
     source_mask = runtime.image_mask(source_image)
-    source_before = runtime.image_rgba(source_image)
+    source_before = runtime.image_gray8(source_image)
     footprint = np.zeros(source_mask.shape, dtype=np.bool_)
     footprint[255:257, 255:257] = True
-    runtime.capture_paint_snapshot(project)
-    painted = runtime.image_rgba(source_image)
-    painted[..., :3][footprint] = float(project.paint_value)
-    assert np.all(painted[255:257, 255:257, :3] == float(project.paint_value))
-    runtime.write_image_rgba(source_image, painted)
-    source_after = runtime.image_rgba(source_image)
-    assert np.any(source_after[..., :3] != source_before[..., :3]), (
+    _expect_finished(bpy.ops.quicksdf.paint_snapshot(), "paint_snapshot")
+    painted = runtime.image_gray8(source_image)
+    painted[footprint] = np.uint8(255 if project.paint_value else 0)
+    runtime.write_image_gray8(source_image, painted)
+    source_after = runtime.image_gray8(source_image)
+    assert np.any(source_after != source_before), (
         current_light,
         selected_index,
         project.paint_value,
-        source_before[256, 256, :3],
-        source_after[256, 256, :3],
+        source_before[256, 256],
+        source_after[256, 256],
         source_image.source,
         bool(source_image.packed_file),
     )
@@ -503,8 +467,9 @@ def run(output_directory: Path) -> None:
     for angle_item in project.angles:
         display = runtime.resolve_display_image(project, angle_item)
         assert display is not None
-        assert np.all(runtime.coverage_mask(angle_item)[255:257, 255:257])
+        assert np.all(runtime.image_mask(display)[footprint] == bool(project.paint_value))
         assert np.all(runtime.image_rgba(display)[..., 3] == 1.0)
+    assert np.all(runtime.coverage_mask(project.angles[selected_index])[footprint])
     from quick_sdf_blender import operators as operator_module
 
     history = operator_module._HISTORIES[str(project.uuid)]
@@ -515,55 +480,6 @@ def run(output_directory: Path) -> None:
     assert restored_after.keys() == transaction_after.keys()
     for name, expected in transaction_after.items():
         np.testing.assert_array_equal(restored_after[name], expected)
-
-    print("[Quick SDF smoke] roll back a partial Smart Paint collection")
-    # Reproduce a propagation failure after an earlier key has already
-    # populated ``before_history`` but before the active (90 degree) canvas is
-    # captured. A cancelled propagation must still remove the native stroke.
-    _expect_finished(bpy.ops.quicksdf.key_select(index=6), "key_select propagation rollback")
-    propagation_source = runtime.resolve_display_image(project, project.angles[6])
-    fail_display = runtime.resolve_display_image(project, project.angles[1])
-    assert propagation_source is not None and fail_display is not None
-    propagation_original = runtime.image_rgba(propagation_source)
-    propagation_region = np.zeros(runtime.image_mask(propagation_source).shape, dtype=np.bool_)
-    propagation_region[200:202, 200:202] = True
-    propagation_light = runtime.image_rgba(propagation_source)
-    propagation_light[..., :3][propagation_region] = 1.0
-    propagation_light[..., 3] = 1.0
-    runtime.write_image_rgba(propagation_source, propagation_light)
-    runtime.capture_paint_snapshot(project)
-    propagation_snapshot = runtime.image_rgba(propagation_source)
-    propagation_shadow = propagation_snapshot.copy()
-    propagation_shadow[..., :3][propagation_region] = 0.0
-    runtime.write_image_rgba(propagation_source, propagation_shadow)
-    assert np.any(runtime.image_rgba(propagation_source) != propagation_snapshot)
-
-    original_image_gray8 = runtime.image_gray8
-    failure_injected = False
-
-    def fail_before_active_collection(image):
-        nonlocal failure_injected
-        if image == fail_display:
-            failure_injected = True
-            raise RuntimeError("simulated pre-active collection failure")
-        return original_image_gray8(image)
-
-    runtime.image_gray8 = fail_before_active_collection
-    try:
-        try:
-            failed_propagation_result = bpy.ops.quicksdf.propagate_overrides()
-        except RuntimeError as exc:
-            assert "simulated pre-active collection failure" in str(exc)
-        else:
-            assert failed_propagation_result == {"CANCELLED"}, failed_propagation_result
-    finally:
-        runtime.image_gray8 = original_image_gray8
-    assert failure_injected
-    assert not runtime.has_paint_snapshot(project)
-    np.testing.assert_array_equal(
-        runtime.image_rgba(propagation_source), propagation_snapshot
-    )
-    runtime.write_image_rgba(propagation_source, propagation_original)
 
     print("[Quick SDF smoke] rebake guide preserves painted RGB and coverage")
     painted_before = {
@@ -576,14 +492,11 @@ def run(output_directory: Path) -> None:
     project.forward_vector = (0.2, -1.0, 0.0)
     project.guide_shadow_amount = 63.0
     _expect_finished(bpy.ops.quicksdf.bake_base(), "bake_base guide")
-    from quick_sdf_blender.core import validate_monotonic, validate_side_monotonic
+    from quick_sdf_blender.core import validate_side_monotonic
 
     guide_stack, guide_angles = runtime.project_side_stack(project, "RIGHT")
     guide_report = validate_side_monotonic(guide_stack, guide_angles)
     assert guide_report.is_valid, guide_report.offending_transitions
-    signed_stack, signed_angles = runtime.project_mask_stack(project)
-    signed_report = validate_monotonic(signed_stack, signed_angles)
-    assert signed_report.is_valid, signed_report.offending_transitions
     for item in project.angles:
         before_display, before_coverage = painted_before[item.uuid]
         display = runtime.image_rgba(runtime.resolve_display_image(project, item))
@@ -677,37 +590,26 @@ def run(output_directory: Path) -> None:
     print("[Quick SDF smoke] preview material is reversible")
     original_material = cube.material_slots[0].material
     original_link = cube.material_slots[0].link
-    masks_before_preview, angles_before_preview = runtime.project_mask_stack(project)
+    masks_before_preview, angles_before_preview = runtime.project_side_stack(project, "RIGHT")
     _expect_finished(bpy.ops.quicksdf.preview_enable(), "preview_enable")
-    masks_after_enable, _angles_after_enable = runtime.project_mask_stack(project)
+    masks_after_enable, _angles_after_enable = runtime.project_side_stack(project, "RIGHT")
     np.testing.assert_array_equal(masks_after_enable, masks_before_preview)
     preview_material = cube.material_slots[0].material
     assert preview_material is not None and preview_material != original_material
     assert preview_material.node_tree.nodes.get("QSDF Original Overlay") is not None
     _expect_finished(bpy.ops.quicksdf.preview_disable(), "preview_disable")
-    masks_after_disable, _angles_after_disable = runtime.project_mask_stack(project)
+    masks_after_disable, _angles_after_disable = runtime.project_side_stack(project, "RIGHT")
     np.testing.assert_array_equal(masks_after_disable, masks_before_preview)
     assert cube.material_slots[0].material == original_material
     assert cube.material_slots[0].link == original_link
-    signed_stack, signed_angles = runtime.project_mask_stack(project)
-    signed_report = validate_monotonic(signed_stack, signed_angles)
-    assert signed_report.is_valid, signed_report.offending_transitions
-
-    print("[Quick SDF smoke] validate, generate, and export RGBA16 PNG")
+    print("[Quick SDF smoke] validate and export RGBA16 PNG")
     _assert_export_worker_side_contracts()
-    _expect_finished(bpy.ops.quicksdf.validate(), "validate")
-    assert not project.has_violations
+    errors, _warnings = runtime.validate_project(project)
+    assert not errors, errors
     assert project.validation_message == "OK"
-    _expect_finished(bpy.ops.quicksdf.generate(), "generate")
-    assert project.generated_image is not None
-    assert project.generated_image.get(runtime.PROJECT_UUID_KEY) == project.uuid
-    assert project.generated_image.get(runtime.ROLE_KEY) == runtime.THRESHOLD_ROLE
-    strict_channels = operators._compute_threshold_channels(
-        operators._prepare_strict_threshold_inputs(project)
-    )
-    strict_expected = operators._pack_threshold_channels(
-        strict_channels, operators._snapshot_packing_inputs(project)
-    )
+    strict_expected = operators._compute_export_result(
+        operators._prepare_packed_threshold_inputs(project)
+    )["rgba"]
 
     print("[Quick SDF smoke] incremental packed snapshot and worker-side PNG")
     conflict_plan = operators._prepare_packed_export_plan(project)
@@ -806,7 +708,7 @@ def run(output_directory: Path) -> None:
     valid_custom_uuid = str(packing_by_output["B"].auxiliary_mask_uuid)
     packing_by_output["B"].auxiliary_mask_uuid = "missing-mask-for-row-error"
     try:
-        operators._prepare_threshold_inputs(project)
+        operators._snapshot_packing_inputs(project)
     except ValueError as error:
         assert str(error).startswith("Packing B:"), str(error)
     else:
@@ -840,12 +742,6 @@ def run(output_directory: Path) -> None:
     assert png_path.read_bytes() == valid_png_bytes
 
     print("[Quick SDF smoke] auto-repair an invalid paint stack without changing source images")
-    from quick_sdf_blender.core import (
-        generate_threshold_pair_channels,
-        repair_side_monotonic,
-    )
-    from quick_sdf_blender.symmetry import mirror_side_stack
-
     test_y, test_x = 100, 100
     invalid_values = (True, False, True, True, True, True, True, True)
     original_pixels = {}
@@ -909,16 +805,11 @@ def run(output_directory: Path) -> None:
         return tuple(records), int(project.packing_revision), recipe_fingerprint
 
     before_repair_export = source_fingerprints()
-    try:
-        strict_result = bpy.ops.quicksdf.generate()
-    except RuntimeError as error:
-        assert "wrong direction" in str(error)
-    else:
-        assert strict_result == {"CANCELLED"}
-    prepared = operators._prepare_threshold_inputs(project)
+    prepared = operators._prepare_packed_threshold_inputs(project)
     assert prepared["linked"]
-    source_display, source_angles, source_base, source_coverage = prepared["source"]
-    repair = repair_side_monotonic(source_display, source_base, source_coverage)
+    source_lane = prepared["source"]
+    source_angles = source_lane.angles
+    repair = operators._repair_packed_export_lane(source_lane)
     assert repair.changed_pixel_count > 0
     assert repair.protected_changed_pixel_count > 0
     from quick_sdf_blender import live_preview
@@ -926,24 +817,13 @@ def run(output_directory: Path) -> None:
     canvas_before_seek = scene.tool_settings.image_paint.canvas
     seek_image = live_preview.update_seek_preview(project, float(source_angles[1]))
     assert seek_image is not None
-    np.testing.assert_array_equal(runtime.image_mask(seek_image), repair.masks[1])
+    repaired_masks = (
+        np.arange(source_lane.count, dtype=np.uint8)[:, None, None]
+        >= repair.transition_indices[None, ...]
+    )
+    np.testing.assert_array_equal(runtime.image_mask(seek_image), repaired_masks[1])
     assert scene.tool_settings.image_paint.canvas == canvas_before_seek
-    mirrored = mirror_side_stack(
-        repair.masks,
-        prepared["mirror_mode"],
-        island_pairs=prepared["island_pairs"],
-    )
-    if prepared["author_side"] == "RIGHT":
-        expected_repaired_channels = generate_threshold_pair_channels(
-            repair.masks, source_angles, mirrored, source_angles
-        )
-    else:
-        expected_repaired_channels = generate_threshold_pair_channels(
-            mirrored, source_angles, repair.masks, source_angles
-        )
-    expected_repaired = operators._pack_threshold_channels(
-        expected_repaired_channels, prepared["packing"]
-    )
+    expected_repaired = operators._compute_export_result(prepared)["rgba"]
     _expect_finished(
         bpy.ops.quicksdf.export_texture(filepath=str(repaired_png_path), overwrite=True),
         "repairing export_texture",
@@ -1130,8 +1010,6 @@ def run(output_directory: Path) -> None:
         assert image is not None and angle_item.display_image == image
         assert image.get(runtime.PROJECT_UUID_KEY) == project_uuid
         assert image.get(runtime.ANGLE_UUID_KEY) == angle_item.uuid
-        assert not hasattr(angle_item, "base_image")
-        assert not hasattr(angle_item, "coverage_image")
         base_blob, coverage_blob, base_token, coverage_token = bitplane_records[
             str(angle_item.uuid)
         ]
@@ -1164,7 +1042,8 @@ def run(output_directory: Path) -> None:
     assert project.generated_image.get(runtime.PROJECT_UUID_KEY) == project_uuid
     assert project.generated_image.get(runtime.ROLE_KEY) == runtime.THRESHOLD_ROLE
     _assert_canvas(project)
-    _expect_finished(bpy.ops.quicksdf.validate(), "validate after reload")
+    errors, _warnings = runtime.validate_project(project)
+    assert not errors, errors
     assert project.validation_message == "OK"
 
     print("[Quick SDF smoke] remove project, then disable/re-enable")

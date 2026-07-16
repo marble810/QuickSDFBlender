@@ -325,8 +325,8 @@ def insert_bitplane_into_uint16(
 ) -> BitplaneHeader:
     """OR one serialized plane into a uint16 per-pixel key bit field.
 
-    Only a bounded lookup chunk is expanded.  This is the schema-6 bridge for
-    ABI-7 ``PackedLane`` snapshots and avoids the decoded bitplane LRU.
+    Only a bounded lookup chunk is expanded, so compact ``PackedLane``
+    snapshots do not need to populate the decoded bitplane LRU.
     """
 
     if isinstance(bit_index, bool) or not isinstance(bit_index, (int, np.integer)):

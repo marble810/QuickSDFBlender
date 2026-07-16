@@ -25,13 +25,9 @@ from bpy.props import (
 from bpy.types import PropertyGroup
 
 
-SCHEMA_VERSION = 6
 # Eight evenly spaced authoring stages.  The values are intentionally not
 # rounded: interpolation and export use the exact normalized position i / 7.
 DEFAULT_KEY_ANGLES = tuple(index * 90.0 / 7.0 for index in range(8))
-# Public name used by project creation. A linked/mirrored project authors one
-# 0..90 degree side; the opposite side is generated live.
-DEFAULT_ANGLES = DEFAULT_KEY_ANGLES
 MAX_KEYS_PER_SIDE = 16
 AUTO_KEY_ANGLE_STEP = 1.0
 AUTO_KEY_SNAP_DEGREES = 2.0
@@ -123,14 +119,6 @@ def _packing_channel_changed(channel, _context) -> None:
     project.packing_revision = int(project.packing_revision) + 1
     project.dirty = True
 
-
-APPLY_TARGET_ITEMS = (
-    ("CURRENT", "Current", "Apply only to the displayed angle"),
-    ("TOWARD_FRONT", "Toward Front", "Apply from this angle toward zero degrees"),
-    ("TOWARD_SIDE", "Toward Side", "Apply from this angle toward the same-side profile"),
-    ("WHOLE_SIDE", "Whole Side", "Apply to every angle on this side, including front"),
-    ("BOTH_SIDES", "Both Sides", "Apply symmetrically to both angle ranges"),
-)
 
 SYMMETRY_ITEMS = (
     ("INDEPENDENT", "Independent", "Author both sides independently"),
@@ -283,14 +271,6 @@ class QSDFAuxMask(PropertyGroup):
 
 class QSDFProject(PropertyGroup):
     uuid: StringProperty(name="UUID", default="")
-    schema_version: IntProperty(
-        name="Schema Version",
-        default=SCHEMA_VERSION,
-        # Keep the serialized value observable so older projects can be
-        # rejected explicitly instead of being silently clamped to schema 6.
-        min=1,
-        max=SCHEMA_VERSION,
-    )
     name: StringProperty(name="Name", default="Quick SDF")
 
     target_object: PointerProperty(name="Object", type=bpy.types.Object)
@@ -309,17 +289,6 @@ class QSDFProject(PropertyGroup):
         subtype="DIRECTION",
         default=(0.0, 0.0, 1.0),
     )
-    forward_axis: EnumProperty(
-        name="Forward Axis",
-        items=(("NEG_Y", "-Y", "Negative Y"), ("POS_Y", "+Y", "Positive Y"), ("NEG_X", "-X", "Negative X"), ("POS_X", "+X", "Positive X")),
-        default="NEG_Y",
-    )
-    up_axis: EnumProperty(
-        name="Up Axis",
-        items=(("POS_Z", "+Z", "Positive Z"), ("NEG_Z", "-Z", "Negative Z"), ("POS_Y", "+Y", "Positive Y"), ("POS_X", "+X", "Positive X")),
-        default="POS_Z",
-    )
-
     angles: CollectionProperty(type=QSDFAngle)
     active_angle_index: IntProperty(name="Active Angle", default=0, min=0)
     active_angle_uuid: StringProperty(name="Active Angle UUID", default="")
@@ -350,28 +319,6 @@ class QSDFProject(PropertyGroup):
         default="RGB",
     )
 
-    author_tool: EnumProperty(
-        name="Author Tool",
-        items=(("BOUNDARY", "Boundary", "Edit boundary curves"), ("PAINT", "Paint", "Paint local corrections")),
-        default="PAINT",
-    )
-    review_mode: EnumProperty(
-        name="Review",
-        items=(
-            ("CURRENT_MASK", "Current Mask", "Display the active mask"),
-            ("ONION_DIFFERENCE", "Onion / Difference", "Compare neighboring masks"),
-            ("THRESHOLD_RESULT", "Threshold Result", "Display the generated threshold result"),
-            ("VIOLATION_HEATMAP", "Violation Heatmap", "Display monotonic violations"),
-        ),
-        default="CURRENT_MASK",
-    )
-    apply_target: EnumProperty(name="Apply To", items=APPLY_TARGET_ITEMS, default="CURRENT")
-    spread_mode: EnumProperty(
-        name="Spread",
-        items=(("SOLID", "Solid", "Keep the footprint across angles"), ("GRADIENT", "Gradient", "Shrink the footprint over angular distance")),
-        default="SOLID",
-    )
-    spread_falloff: FloatProperty(name="Falloff", default=1.0, min=0.01, max=8.0)
     symmetry_mode: EnumProperty(name="Symmetry", items=SYMMETRY_ITEMS, default="AUTO")
     mirror_enabled: BoolProperty(name="Mirror", default=True)
     authoring_side: EnumProperty(name="Authoring Side", items=SIDE_ITEMS, default="RIGHT")
@@ -385,9 +332,7 @@ class QSDFProject(PropertyGroup):
         name="Choose Mirror Layout", default=False, options={"HIDDEN"}
     )
     paint_value: IntProperty(name="Paint Value", default=0, min=0, max=1)
-    review_angle: FloatProperty(name="Review Angle", default=0.0, min=-90.0, max=90.0)
     seek_angle: FloatProperty(name="Light Angle", default=0.0, min=0.0, max=90.0)
-    symmetry_confidence: FloatProperty(name="Symmetry Confidence", default=0.0, min=0.0, max=1.0, subtype="FACTOR")
     preview_enabled: BoolProperty(name="Preview Enabled", default=False)
     preview_mode: EnumProperty(
         name="Display",
@@ -441,7 +386,6 @@ class QSDFProject(PropertyGroup):
     base_source: EnumProperty(
         name="Base Source", items=BASE_SOURCE_ITEMS, default="NORMAL_GUIDE"
     )
-    guide_version: IntProperty(name="Guide Version", default=2, min=0, options={"HIDDEN"})
     guide_shadow_amount: FloatProperty(
         name="Shadow Amount", default=50.0, min=0.0, max=100.0, subtype="PERCENTAGE"
     )
@@ -471,16 +415,10 @@ class QSDFProject(PropertyGroup):
         name="Job Status", default="", options={"HIDDEN", "SKIP_SAVE"}
     )
 
-    # Preview material restoration state.  Pointers survive save/load, unlike a
-    # module-level dictionary, and are repaired conservatively when missing.
+    # Preview material restoration state survives save/load and can recover
+    # after a Studio session is interrupted.
     original_material: PointerProperty(name="Original Material", type=bpy.types.Material)
-    preview_material: PointerProperty(name="Preview Material", type=bpy.types.Material)
     preview_material_name: StringProperty(name="Preview Material Name", default="")
-    original_slot_link: EnumProperty(
-        name="Original Slot Link",
-        items=(("DATA", "Data", "Data-linked material"), ("OBJECT", "Object", "Object-linked material")),
-        default="DATA",
-    )
     original_material_was_none: BoolProperty(name="Original Material Was Empty", default=False)
     material_override_active: BoolProperty(name="Material Override Active", default=False)
 
@@ -492,34 +430,12 @@ class QSDFSettings(PropertyGroup):
         items=(
             ("WHITE", "All Light", "Initialize every angle to white/light"),
             ("EXISTING", "Existing Mask", "Copy the selected image to every angle"),
-            ("NORMAL_SWEEP", "Light Sweep", "Initialize from mesh normals in UV space"),
+            ("NORMAL_GUIDE", "Light Sweep", "Initialize from mesh normals in UV space"),
         ),
-        default="NORMAL_SWEEP",
+        default="NORMAL_GUIDE",
     )
     source_image: PointerProperty(name="Source Mask", type=bpy.types.Image)
-    create_author_workspace: BoolProperty(name="Create Author Workspace", default=False)
     mask_sequence_directory: StringProperty(name="Mask Directory", subtype="DIR_PATH", default="//QuickSDF_masks")
-
-
-def is_current_schema(project) -> bool:
-    """Return whether ``project`` is exactly the only supported schema."""
-
-    try:
-        return int(project.schema_version) == SCHEMA_VERSION
-    except (AttributeError, ReferenceError, TypeError, ValueError):
-        return False
-
-
-def validate_schema(project):
-    """Require schema 6 and return the validated project for call chaining."""
-
-    actual = getattr(project, "schema_version", None)
-    if not is_current_schema(project):
-        raise ValueError(
-            f"Unsupported Quick SDF project schema {actual!r}; "
-            f"schema {SCHEMA_VERSION} is required"
-        )
-    return project
 
 
 def aux_mask_for_uuid(project, mask_uuid: str):

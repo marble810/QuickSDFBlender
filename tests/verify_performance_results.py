@@ -28,8 +28,8 @@ def main() -> None:
     resolution = int(probe["resolution"])
     keys = int(probe["keys"])
     lane_mode = str(probe["lane_mode"])
-    if int(probe["native_abi"]) < 7:
-        raise AssertionError("Performance acceptance requires Native ABI 7")
+    if int(probe["native_abi"]) != 8:
+        raise AssertionError("Performance acceptance requires Native ABI 8")
     if int(probe["resident_display_images"]) > 3 and resolution >= 2048:
         raise AssertionError("More than Active + adjacent Display images remain resident")
 

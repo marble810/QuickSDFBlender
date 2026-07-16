@@ -234,14 +234,8 @@ class GenerationJobManager:
         self.shutdown()
 
 
-# Short alias for callers which do not need to distinguish generation jobs
-# from other application-level work.
-JobManager = GenerationJobManager
-
-
 __all__ = [
     "GenerationJobManager",
-    "JobManager",
     "JobNotReadyError",
     "JobState",
 ]

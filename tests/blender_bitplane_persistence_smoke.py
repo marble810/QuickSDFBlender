@@ -1,8 +1,8 @@
-"""Blender 5.1/5.2 smoke test for schema-6 bitplane persistence.
+"""Blender 5.1/5.2 smoke test for bitplane persistence.
 
 Run from the repository root with::
 
-    blender --background --factory-startup --python tests/blender_schema6_smoke.py
+    blender --background --factory-startup --python tests/blender_bitplane_persistence_smoke.py
 """
 
 from __future__ import annotations
@@ -26,7 +26,6 @@ from quick_sdf_blender.bitplane import (  # noqa: E402
     decode_bitplane,
     inspect_bitplane_header,
 )
-from quick_sdf_blender.model import SCHEMA_VERSION, validate_schema  # noqa: E402
 
 
 def _project_angle_images(project_uuid: str) -> tuple[bpy.types.Image, ...]:
@@ -40,14 +39,12 @@ def _project_angle_images(project_uuid: str) -> tuple[bpy.types.Image, ...]:
 
 def main() -> None:
     assert (5, 1) <= bpy.app.version[:2] < (5, 3), bpy.app.version_string
-    assert SCHEMA_VERSION == 6
     quick_sdf_blender.register()
     try:
         scene = bpy.context.scene
         project = scene.quick_sdf_projects.add()
-        project.uuid = "schema-6-save-reload"
-        project.name = "Schema 6 Bitplanes"
-        project.schema_version = SCHEMA_VERSION
+        project.uuid = "bitplane-save-reload"
+        project.name = "Bitplane Persistence"
         project.resolution = 512
         scene.quick_sdf_active_project_index = 0
 
@@ -55,7 +52,7 @@ def main() -> None:
         records: dict[str, tuple[bytes, bytes, np.ndarray, np.ndarray, int, int]] = {}
         for index, angle in enumerate((0.0, 90.0)):
             item = project.angles.add()
-            item.uuid = f"schema-6-angle-{index}"
+            item.uuid = f"bitplane-angle-{index}"
             item.angle = angle
             item.side = "RIGHT"
             display = runtime.create_angle_layer_image(
@@ -100,18 +97,15 @@ def main() -> None:
             image.get(runtime.ROLE_KEY) == runtime.DISPLAY_ROLE
             for image in _project_angle_images(project.uuid)
         )
-        assert all(not hasattr(item, "base_image") for item in project.angles)
-        assert all(not hasattr(item, "coverage_image") for item in project.angles)
 
-        with tempfile.TemporaryDirectory(prefix="quicksdf-schema6-") as directory:
-            blend_path = Path(directory) / "schema6.blend"
+        with tempfile.TemporaryDirectory(prefix="quicksdf-bitplane-") as directory:
+            blend_path = Path(directory) / "bitplanes.blend"
             assert bpy.ops.wm.save_as_mainfile(filepath=str(blend_path)) == {"FINISHED"}
             assert bpy.ops.wm.open_mainfile(filepath=str(blend_path)) == {"FINISHED"}
 
         scene = bpy.context.scene
         project = scene.quick_sdf_projects[0]
-        assert project.schema_version == SCHEMA_VERSION == 6
-        assert project.uuid == "schema-6-save-reload"
+        assert project.uuid == "bitplane-save-reload"
         runtime.repair_project_references(scene)
         assert len(project.angles) == 2
         assert len(_project_angle_images(project.uuid)) == len(project.angles)
@@ -159,24 +153,11 @@ def main() -> None:
             np.testing.assert_array_equal(
                 runtime.coverage_mask(item), expected_coverage
             )
-            assert not hasattr(item, "base_image")
-            assert not hasattr(item, "coverage_image")
 
-        legacy = scene.quick_sdf_projects.add()
-        legacy.uuid = "unsupported-schema-5"
-        legacy.schema_version = 5
-        legacy_state = (legacy.uuid, int(legacy.schema_version), len(legacy.angles))
-        try:
-            validate_schema(legacy)
-        except ValueError as error:
-            assert "schema 6 is required" in str(error)
-        else:
-            raise AssertionError("Schema 5 was unexpectedly accepted or migrated")
-        assert (legacy.uuid, int(legacy.schema_version), len(legacy.angles)) == legacy_state
     finally:
         quick_sdf_blender.unregister()
 
-    print("[Quick SDF schema-6 bitplane persistence smoke] PASS")
+    print("[Quick SDF bitplane persistence smoke] PASS")
 
 
 if __name__ == "__main__":

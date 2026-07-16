@@ -348,7 +348,7 @@ def _run() -> None:
             for node in original_tree.nodes
         )
         bpy.context.scene.quick_sdf_settings.resolution = 512
-        bpy.context.scene.quick_sdf_settings.initialization = "NORMAL_SWEEP"
+        bpy.context.scene.quick_sdf_settings.initialization = "NORMAL_GUIDE"
         assert bpy.ops.quicksdf.project_create() == {"FINISHED"}
         project = runtime.active_project()
         assert project is not None

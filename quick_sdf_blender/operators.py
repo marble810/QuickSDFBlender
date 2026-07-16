@@ -111,18 +111,6 @@ def _project_for_object(scene: bpy.types.Scene, obj: bpy.types.Object | None):
     return project
 
 
-def _axis_vector(name: str):
-    values = {
-        "NEG_X": (-1.0, 0.0, 0.0),
-        "POS_X": (1.0, 0.0, 0.0),
-        "NEG_Y": (0.0, -1.0, 0.0),
-        "POS_Y": (0.0, 1.0, 0.0),
-        "NEG_Z": (0.0, 0.0, -1.0),
-        "POS_Z": (0.0, 0.0, 1.0),
-    }
-    return values[name]
-
-
 def _extract_evaluated_bake_input(context, project):
     """Copy evaluated UV triangles and per-corner normals on the main thread."""
 
@@ -270,7 +258,6 @@ def _detect_project_symmetry(project, triangle_uvs, corner_normals, triangle_cen
     negative = ~positive
     if not np.any(positive) or not np.any(negative):
         project.symmetry_candidate = "TEXTURE_MIRROR"
-        project.symmetry_confidence = 0.0
         project.symmetry_requires_confirmation = True
         project.symmetry_mode = "AUTO"
         return
@@ -292,7 +279,6 @@ def _detect_project_symmetry(project, triangle_uvs, corner_normals, triangle_cen
     }
     candidate = mapping[analysis.suggested_mode]
     project.symmetry_candidate = candidate
-    project.symmetry_confidence = float(analysis.confidence)
     project.symmetry_requires_confirmation = analysis.confidence < 0.90
     project.symmetry_mode = "AUTO" if project.symmetry_requires_confirmation else candidate
 
@@ -375,7 +361,6 @@ def _bake_project(context, project) -> None:
         project.base_needs_update = False
         project.base_signature = runtime.compute_base_signature(project, context.scene)
         project.base_source = "NORMAL_GUIDE"
-        project.guide_version = 2
         project.guide_direction_warning = guide_warning
         project.guide_direction_message = guide_message
         project.dirty = True
@@ -594,7 +579,6 @@ def _finish_async_bake(project, job) -> None:
     project.base_needs_update = False
     project.base_signature = signature
     project.base_source = "NORMAL_GUIDE"
-    project.guide_version = 2
     project.guide_direction_warning = bool(job["result"]["guide_warning"])
     project.guide_direction_message = (
         "The guide is nearly uniform; confirm which way the face points"
@@ -644,21 +628,20 @@ def _create_project_data(context, *, sync_ui: bool = True, activate: bool = True
     project.mirror_enabled = True
     project.symmetry_mode = "AUTO"
     project.base_source = {
-        "NORMAL_SWEEP": "NORMAL_GUIDE",
+        "NORMAL_GUIDE": "NORMAL_GUIDE",
         "EXISTING": "IMPORTED",
         "WHITE": "WHITE",
     }.get(str(settings.initialization), "NORMAL_GUIDE")
-    project.guide_version = 2 if project.base_source == "NORMAL_GUIDE" else 0
     project.guide_shadow_amount = 50.0
     try:
         source = settings.source_image if settings.initialization == "EXISTING" else None
         runtime.create_project_images(project, source)
         _ensure_project_aux_images(project)
-        if settings.initialization == "NORMAL_SWEEP":
+        if settings.initialization == "NORMAL_GUIDE":
             _bake_project(context, project)
         else:
             _reset_sdf_area_from_uv(context, project, force=False)
-        errors, warnings, _report = runtime.validate_project(project, include_monotonic=True)
+        errors, warnings = runtime.validate_project(project)
         if errors:
             raise ValueError("\n".join(errors))
         project.warning_message = "\n".join(warnings)
@@ -737,7 +720,7 @@ class QUICKSDF_OT_project_remove(bpy.types.Operator):
                 exit_studio(context, reason="project-remove")
         except (ImportError, RuntimeError, ReferenceError):
             pass
-        runtime.discard_paint_snapshot(project)
+        runtime.discard_paint_snapshots(project)
         _HISTORIES.pop(str(project.uuid), None)
         obj = project.target_object
         if obj is not None and not bpy.app.background and obj.mode == "TEXTURE_PAINT":
@@ -1217,22 +1200,6 @@ class QUICKSDF_OT_key_delete(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class QUICKSDF_OT_sync_canvas(bpy.types.Operator):
-    bl_idname = "quicksdf.sync_canvas"
-    bl_label = "Activate Selected Angle"
-    bl_description = "Use the selected angle mask in Texture Paint and visible Image Editors"
-    bl_options = {"INTERNAL"}
-
-    def execute(self, context):
-        project = _require_project(self, context)
-        if project is None:
-            return {"CANCELLED"}
-        angle_item = runtime.active_angle(project)
-        if angle_item is not None:
-            project.review_angle = angle_item.angle
-        return {"FINISHED"} if runtime.sync_canvas(context, project) is not None else {"CANCELLED"}
-
-
 def _packing_channel(project, output_channel: str):
     from .model import packing_channel_for
 
@@ -1644,30 +1611,6 @@ class QUICKSDF_OT_paint_value_set(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class QUICKSDF_OT_studio_display_mode(bpy.types.Operator):
-    bl_idname = "quicksdf.studio_display_mode"
-    bl_label = "Change Paint Display"
-    bl_options = {"INTERNAL"}
-
-    mode: StringProperty(name="Mode", default="OVERLAY")
-
-    def execute(self, context):
-        project = _require_project(self, context)
-        if project is None or self.mode not in {"OVERLAY", "MASK", "TOON"}:
-            return {"CANCELLED"}
-        project.preview_mode = self.mode
-        item = runtime.active_angle(project)
-        image = runtime.resolve_display_image(project, item) if item is not None else None
-        try:
-            from .preview import set_preview_image
-
-            if image is not None:
-                set_preview_image(project, image)
-        except (RuntimeError, ValueError):
-            return {"CANCELLED"}
-        return {"FINISHED"}
-
-
 class QUICKSDF_OT_symmetry_choose(bpy.types.Operator):
     bl_idname = "quicksdf.symmetry_choose"
     bl_label = "Choose Mirror Layout"
@@ -1898,108 +1841,6 @@ def _symmetry_island_pairs(project, shape):
         pairs.append(IslandPair(source[1], target[1]))
         pairs.append(IslandPair(target[1], source[1]))
     return pairs
-
-
-class QUICKSDF_OT_clear_overrides(bpy.types.Operator):
-    bl_idname = "quicksdf.clear_overrides"
-    bl_label = "Clear Paint Overrides"
-    bl_description = "Clear alpha override flags for the configured angle range"
-    bl_options = {"REGISTER", "UNDO"}
-
-    def execute(self, context):
-        import numpy as np
-
-        project = _require_project(self, context)
-        if project is None:
-            return {"CANCELLED"}
-        clear_histories(str(project.uuid))
-        from .core import range_target_indices
-
-        values = [item.angle for item in project.angles]
-        indices = range_target_indices(values, project.active_angle_index, project.apply_target)
-        if not project.boundary_tracks:
-            try:
-                runtime.materialize_effective_coverage(
-                    project,
-                    (project.angles[int(index)] for index in indices),
-                )
-            except (RuntimeError, ValueError) as exc:
-                self.report({"ERROR"}, f"Could not read the current paint: {exc}")
-                return {"CANCELLED"}
-        snapshots = {}
-        if project.boundary_tracks:
-            for angle_item in project.angles:
-                image = runtime.resolve_display_image(project, angle_item)
-                if image is not None:
-                    snapshots[image.name] = runtime.image_rgba(image)
-        for index in indices:
-            image = runtime.resolve_display_image(project, project.angles[int(index)])
-            if image is not None:
-                runtime.clear_image_alpha(image)
-        try:
-            from .boundary import regenerate_boundary_images
-
-            regenerate_boundary_images(project)
-        except (RuntimeError, ValueError) as exc:
-            for image_name, rgba in snapshots.items():
-                image = bpy.data.images.get(image_name)
-                if image is not None:
-                    region = np.ones(rgba.shape[:2], dtype=np.bool_)
-                    runtime.restore_image_region(image, rgba, region)
-            self.report({"ERROR"}, f"Could not clear overrides: {exc}")
-            return {"CANCELLED"}
-        project.dirty = True
-        return {"FINISHED"}
-
-
-def _gradient_footprint(footprint, ratio: float, falloff: float):
-    """Contract a stroke footprint by its exact interior distance."""
-    import numpy as np
-
-    if ratio <= 0.0 or not np.any(footprint):
-        return footprint.copy()
-    from .core import exact_signed_edt
-
-    area = float(np.count_nonzero(footprint))
-    equivalent_radius = max(1.0, (area / np.pi) ** 0.5)
-    erosion = equivalent_radius * min(0.98, ratio * max(0.01, float(falloff)))
-    signed = exact_signed_edt(footprint)
-    return footprint & ((-signed) >= erosion)
-
-
-def _resolve_selected_monotonic(candidate, angles, selected):
-    """Resolve violations when the native stroke already invalidated baseline.
-
-    Only selected angle images may change.  A closer light pixel is propagated
-    outward when possible; otherwise the closer proposed pixel is clipped.
-    """
-    import numpy as np
-
-    result = candidate.copy()
-    selected_set = {int(index) for index in selected}
-    angle_values = np.asarray(angles, dtype=np.float64)
-    clipped = np.zeros_like(result, dtype=np.bool_)
-    repairs = np.zeros_like(result, dtype=np.bool_)
-    for _pass in range(result.shape[0] * 2):
-        changed = False
-        for sign in (-1, 1):
-            indices = np.flatnonzero((angle_values * sign > 0.0) | np.isclose(angle_values, 0.0))
-            indices = indices[np.argsort(np.abs(angle_values[indices]), kind="stable")]
-            for closer, farther in zip(indices[:-1], indices[1:]):
-                invalid = result[closer] & ~result[farther]
-                if not np.any(invalid):
-                    continue
-                if int(farther) in selected_set:
-                    result[farther][invalid] = True
-                    repairs[farther] |= invalid
-                    changed = True
-                elif int(closer) in selected_set:
-                    result[closer][invalid] = False
-                    clipped[closer] |= invalid
-                    changed = True
-        if not changed:
-            break
-    return result, clipped, repairs
 
 
 class QUICKSDF_OT_propagate_overrides(bpy.types.Operator):
@@ -2326,175 +2167,9 @@ class QUICKSDF_OT_propagate_overrides(bpy.types.Operator):
             finally:
                 finish_stroke(no_change=interactive_no_change)
 
-        # API callers that bypassed the Studio snapshot retain the older
-        # compatibility path below. Normal 3D/2D Studio paint has already been
-        # committed transactionally above.
-        if not runtime.has_paint_snapshot(project):
-            active_item = runtime.active_angle(project)
-            source_image = runtime.resolve_display_image(project, active_item) if active_item else None
-            if source_image is None:
-                finish_stroke()
-                self.report({"ERROR"}, "The active angle image is missing")
-                return {"CANCELLED"}
-            complete_active_stroke(active_item, source_image)
-            finish_stroke()
-            return {"FINISHED"}
-
-        active_item = runtime.active_angle(project)
-        source_image = runtime.resolve_display_image(project, active_item)
-        if source_image is None:
-            finish_stroke()
-            self.report({"ERROR"}, "The active angle image is missing")
-            return {"CANCELLED"}
-        source_rgba = runtime.image_rgba(source_image)
-        snapshot = runtime.consume_paint_snapshot(project)
-        if snapshot is None or snapshot.shape != source_rgba.shape:
-            finish_stroke()
-            return {"CANCELLED"}
-        touched = np.any(
-            np.abs(source_rgba[..., :3] - snapshot[..., :3]) > (0.5 / 255.0), axis=2
-        )
-        if not np.any(touched):
-            finish_stroke(no_change=True)
-            return {"FINISHED"}
-        _UNDO_FENCES.add(str(project.uuid))
-        before_history: dict[str, np.ndarray] = {}
-        affected = []
-        metadata_before: dict[str, tuple[bool, bool]] = {}
-        project_flags_before = (
-            bool(getattr(project, "first_stroke_complete", False)),
-            bool(getattr(project, "dirty", False)),
-        )
-        try:
-            from .smart_paint import apply_smart_transitions
-
-            side = str(active_item.side)
-            items = sorted(
-                (item for item in project.angles if str(item.side) == side),
-                key=lambda item: float(item.angle),
-            )
-            active_index = next(index for index, item in enumerate(items) if item.uuid == active_item.uuid)
-            angles = np.asarray([float(item.angle) for item in items], dtype=np.float64)
-            masks = np.stack(
-                [
-                    (snapshot[..., 0] >= 0.5)
-                    if item.uuid == active_item.uuid
-                    else runtime.image_mask(runtime.resolve_display_image(project, item))
-                    for item in items
-                ],
-                axis=0,
-            )
-            coverage = np.stack(
-                [runtime.coverage_mask(item) for item in items],
-                axis=0,
-            )
-            before_mask = snapshot[..., 0] >= 0.5
-            after_mask = source_rgba[..., 0] >= 0.5
-            became_light = touched & ~before_mask & after_mask
-            became_shadow = touched & before_mask & ~after_mask
-            result = apply_smart_transitions(
-                masks,
-                coverage,
-                angles,
-                active_index,
-                touched,
-                became_light,
-                became_shadow,
-            )
-            for index in result.affected_indices:
-                item = items[index]
-                display = runtime.resolve_display_image(project, item)
-                if display is None:
-                    raise ValueError("A Smart Paint image is missing")
-                display_key = f"display:{item.uuid}"
-                coverage_key = f"coverage:{item.uuid}"
-                before_history[display_key] = (
-                    runtime.rgba_to_u8(snapshot)[..., 0]
-                    if item.uuid == active_item.uuid
-                    else runtime.image_gray8(display)
-                )
-                before_history[coverage_key] = runtime.coverage_mask(item).copy()
-                metadata_before[str(item.uuid)] = (
-                    bool(getattr(item, "is_manual", False)),
-                    bool(getattr(item, "dirty", False)),
-                )
-                affected.append((index, item, display))
-            for index, item, display in affected:
-                key_footprint = result.footprints[index]
-                runtime.write_mask_overrides(
-                    display,
-                    result.masks[index],
-                    key_footprint,
-                    coverage_item=item,
-                )
-                if item.uuid == active_item.uuid:
-                    antialiased = runtime.image_rgba(display)
-                    antialiased[..., :3][touched] = source_rgba[..., :3][touched]
-                    runtime.write_image_rgba(display, antialiased)
-            after_history = _history_values(project, before_history)
-            # Publish per-key metadata only after every image write and readback
-            # succeeded.  A failed multi-image stroke can then roll pixels back
-            # without leaving keys marked as manually edited.
-            for _index, item, _display in affected:
-                item.is_manual = True
-                item.dirty = True
-            history = _HISTORIES.setdefault(
-                str(project.uuid), History(compression_level=1)
-            )
-            had_redo = history.can_redo
-            if not history.push("Smart Paint", before_history, after_history):
-                raise RuntimeError(
-                    "This stroke is too large for the Quick SDF Undo history"
-                )
-            if had_redo:
-                _purge_history_orphans(str(project.uuid))
-            try:
-                from .live_preview import invalidate
-
-                invalidate(str(project.uuid))
-            except ImportError:
-                pass
-            project.first_stroke_complete = True
-            try:
-                from .studio import dismiss_first_stroke_hint
-
-                dismiss_first_stroke_hint()
-            except (ImportError, RuntimeError):
-                pass
-            project.dirty = True
-        except Exception as exc:
-            clear_histories(str(project.uuid))
-            if before_history:
-                try:
-                    _write_history_values(project, before_history)
-                except Exception:
-                    pass
-            # Collection can fail after earlier angle images were captured but
-            # before the active canvas was added. Restore that native stroke as
-            # well; a CANCELLED compatibility operation must never leave paint
-            # behind merely because ``before_history`` is partially populated.
-            if f"display:{active_item.uuid}" not in before_history:
-                try:
-                    runtime.write_image_rgba(source_image, snapshot)
-                except Exception:
-                    pass
-            for _index, item, _display in affected:
-                previous = metadata_before.get(str(getattr(item, "uuid", "")))
-                if previous is not None:
-                    try:
-                        item.is_manual, item.dirty = previous
-                    except (AttributeError, ReferenceError):
-                        pass
-            try:
-                project.first_stroke_complete, project.dirty = project_flags_before
-            except (AttributeError, ReferenceError):
-                pass
-            finish_stroke()
-            self.report({"ERROR"}, str(exc))
-            return {"CANCELLED"}
-        finish_stroke()
-        runtime.sync_canvas(context, project)
-        return {"FINISHED"}
+        finish_stroke(no_change=True)
+        self.report({"ERROR"}, "No active Quick SDF paint stroke")
+        return {"CANCELLED"}
 
 
 class QUICKSDF_OT_paint_snapshot(bpy.types.Operator):
@@ -2612,7 +2287,6 @@ class _QuickSDFPaintMacroMixin:
             active
             and not export_review_active
             and editor_paint
-            and getattr(project, "author_tool", "PAINT") == "PAINT"
             and not bool(getattr(project, "job_running", False))
         )
 
@@ -2913,94 +2587,8 @@ class QUICKSDF_OT_history_redo(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class QUICKSDF_OT_validate(bpy.types.Operator):
-    bl_idname = "quicksdf.validate"
-    bl_label = "Validate Quick SDF"
-    bl_description = "Validate project inputs and monotonic angle transitions"
-
-    def execute(self, context):
-        project = _require_project(self, context)
-        if project is None:
-            return {"CANCELLED"}
-        try:
-            errors, warnings, report = runtime.validate_project(project, include_monotonic=True)
-        except Exception as exc:
-            self.report({"ERROR"}, str(exc))
-            return {"CANCELLED"}
-        if errors:
-            self.report({"WARNING"}, errors[-1])
-        elif warnings:
-            self.report({"WARNING"}, warnings[0])
-        else:
-            self.report({"INFO"}, "Face-shadow keys are ready to export")
-        return {"FINISHED"}
-
-
-def _prepare_threshold_inputs(project):
-    """Copy every bpy-backed export layer before work moves to a worker."""
-
-    # Resolve the recipe first so a broken reference is reported against its
-    # visible R/G/B/A row instead of being hidden behind a generic project
-    # validation error.
-    packing = _snapshot_packing_inputs(project)
-    previous_status = (
-        str(getattr(project, "validation_message", "")),
-        str(getattr(project, "warning_message", "")),
-        str(getattr(project, "diagnostic_message", "")),
-        bool(getattr(project, "has_violations", False)),
-    )
-    try:
-        errors, _warnings, _report = runtime.validate_project(
-            project, include_monotonic=False
-        )
-    finally:
-        (
-            project.validation_message,
-            project.warning_message,
-            project.diagnostic_message,
-            project.has_violations,
-        ) = previous_status
-    if errors:
-        raise ValueError(errors[0])
-    mirror_mode = str(getattr(project, "symmetry_mode", "AUTO"))
-    if mirror_mode == "AUTO":
-        mirror_mode = str(getattr(project, "symmetry_candidate", "TEXTURE_MIRROR"))
-    linked = bool(getattr(project, "mirror_enabled", True)) and mirror_mode != "INDEPENDENT"
-    if not linked:
-        return {
-            "linked": False,
-            "right": runtime.project_side_export_layers(project, "RIGHT"),
-            "left": runtime.project_side_export_layers(project, "LEFT"),
-            "packing": packing,
-        }
-
-    available = {
-        str(getattr(item, "side", "RIGHT")) for item in getattr(project, "angles", ())
-    }
-    author_side = str(getattr(project, "authoring_side", "RIGHT"))
-    if author_side not in available:
-        author_side = "RIGHT" if "RIGHT" in available else "LEFT"
-    source = runtime.project_side_export_layers(project, author_side)
-    pairs = None
-    if mirror_mode == "ISLAND_PAIR":
-        pairs = _symmetry_island_pairs(project, source[0].shape[1:])
-    mode_map = {
-        "OVERLAPPED_UV": "OVERLAPPED",
-        "TEXTURE_MIRROR": "TEXTURE_MIRROR",
-        "ISLAND_PAIR": "ISLAND_PAIR",
-    }
-    return {
-        "linked": True,
-        "author_side": author_side,
-        "source": source,
-        "mirror_mode": mode_map.get(mirror_mode, "TEXTURE_MIRROR"),
-        "island_pairs": pairs,
-        "packing": packing,
-    }
-
-
 def _prepare_packed_export_plan(project):
-    """Prepare ABI-7 metadata and incremental bpy snapshot builders."""
+    """Prepare compact export metadata and incremental bpy snapshot builders."""
 
     packing = _snapshot_packing_inputs(project)
     previous_status = (
@@ -3010,9 +2598,7 @@ def _prepare_packed_export_plan(project):
         bool(getattr(project, "has_violations", False)),
     )
     try:
-        errors, _warnings, _report = runtime.validate_project(
-            project, include_monotonic=False
-        )
+        errors, _warnings = runtime.validate_project(project)
     finally:
         (
             project.validation_message,
@@ -3027,7 +2613,6 @@ def _prepare_packed_export_plan(project):
         mirror_mode = str(getattr(project, "symmetry_candidate", "TEXTURE_MIRROR"))
     linked = bool(getattr(project, "mirror_enabled", True)) and mirror_mode != "INDEPENDENT"
     result = {
-        "packed": True,
         "linked": linked,
         "packing": packing,
         "snapshot_builders": [],
@@ -3078,7 +2663,7 @@ def _finish_packed_export_plan(plan):
 
 
 def _prepare_packed_threshold_inputs(project):
-    """Synchronous ABI-7 snapshot for scripts and background Blender."""
+    """Build a synchronous compact snapshot for previews and background Blender."""
 
     plan = _prepare_packed_export_plan(project)
     for _name, builder in plan["snapshot_builders"]:
@@ -3228,105 +2813,6 @@ def _export_revision_token(project):
     )
 
 
-def _prepare_strict_threshold_inputs(project):
-    """Preserve the public ``quicksdf.generate`` strict validation contract."""
-
-    from .core import validate_side_monotonic
-
-    errors, _warnings, _report = runtime.validate_project(project, include_monotonic=False)
-    if errors:
-        raise ValueError(errors[0])
-    pairs = None
-    mirror_mode = str(getattr(project, "symmetry_mode", "AUTO"))
-    if mirror_mode == "AUTO":
-        mirror_mode = str(getattr(project, "symmetry_candidate", "TEXTURE_MIRROR"))
-    if bool(getattr(project, "mirror_enabled", True)) and mirror_mode == "ISLAND_PAIR":
-        sample_item = next(iter(project.angles), None)
-        sample = (
-            runtime.resolve_display_image(project, sample_item)
-            if sample_item is not None
-            else None
-        )
-        if sample is not None:
-            pairs = _symmetry_island_pairs(project, (sample.size[1], sample.size[0]))
-    right, right_angles, left, left_angles = runtime.project_side_stacks(
-        project, island_pairs=pairs
-    )
-    reports = (
-        validate_side_monotonic(right, right_angles),
-        validate_side_monotonic(left, left_angles),
-    )
-    project.has_violations = any(not report.is_valid for report in reports)
-    if project.has_violations:
-        count = sum(report.violation_pixel_count for report in reports)
-        raise ValueError(
-            f"Some imported pixels change in the wrong direction ({count} pixels)"
-        )
-    return right, right_angles, left, left_angles
-
-
-def _compute_threshold_channels(inputs, cancel_flag=None):
-    """Generate canonical R/G planes; ctypes releases the GIL in native EDT."""
-
-    from .core import generate_threshold_pair_channels
-
-    right, right_angles, left, left_angles = inputs
-    try:
-        from . import native
-
-        if native.available() and native.version() >= 5:
-            return native.generate_threshold_pair(
-                right, right_angles, left, left_angles, cancel_flag=cancel_flag
-            )
-    except (ImportError, OSError, AttributeError):
-        pass
-    return generate_threshold_pair_channels(
-        right, right_angles, left, left_angles, validate=True
-    )
-
-
-def _pack_threshold_channels(channels, packing):
-    from .packing import PackingSource, pack_rgba16
-
-    signals = dict(packing["signals"])
-    signals[PackingSource.RIGHT_THRESHOLD] = channels[..., 0]
-    signals[PackingSource.LEFT_THRESHOLD] = channels[..., 1]
-    return pack_rgba16(
-        signals,
-        packing["specs"],
-        shape=packing.get("shape", channels.shape[:2]),
-    )
-
-
-def _repair_export_lane(lane, cancel_flag=None):
-    """Repair one copied lane and verify the derived result strictly."""
-
-    display, angles, base, coverage = lane
-    try:
-        from . import native
-
-        repair = native.repair_side_monotonic(
-            display, base, coverage, cancel_flag=cancel_flag
-        )
-    except (ImportError, OSError, AttributeError):
-        from .core import repair_side_monotonic
-
-        repair = repair_side_monotonic(display, base, coverage)
-    from .core import validate_side_monotonic
-
-    report = validate_side_monotonic(repair.masks, angles)
-    if not report.is_valid:
-        raise RuntimeError("Automatic angle repair did not produce a valid export stack")
-    return repair
-
-
-def _change_heatmap(changed_mask):
-    import numpy as np
-
-    changed = np.asarray(changed_mask, dtype=np.bool_)
-    return np.count_nonzero(changed, axis=0).astype(np.float32) / float(changed.shape[0])
-
-
 def _repair_packed_export_lane(lane, cancel_flag=None):
     try:
         from . import native
@@ -3368,8 +2854,8 @@ def _generate_transition_channel(
         )
 
 
-def _compute_packed_export_result(inputs, cancel_flag=None, progress=None):
-    """Repair and generate directly from ABI-7 bit fields."""
+def _compute_export_result(inputs, cancel_flag=None, progress=None):
+    """Repair and generate directly from compact per-pixel bit fields."""
 
     import numpy as np
 
@@ -3416,10 +2902,9 @@ def _compute_packed_export_result(inputs, cancel_flag=None, progress=None):
                     repair.transition_indices,
                     mode,
                     island_pairs=pairs,
-                    # Legacy stack mirroring starts the opposite lane as
-                    # all-Shadow outside paired target islands.  In compact
-                    # transition form that sentinel is ``key_count``, not 0
-                    # (which means always Light).
+                    # The opposite lane starts as all-Shadow outside paired
+                    # target islands. In compact transition form that sentinel
+                    # is ``key_count``, not 0 (which means always Light).
                     target_template=np.full_like(
                         repair.transition_indices, source.count
                     ),
@@ -3501,78 +2986,6 @@ def _compute_packed_export_result(inputs, cancel_flag=None, progress=None):
         shape=inputs["packing"].get("shape", rgba.shape[:2]),
         out=rgba,
     )
-    if cancelled():
-        raise RuntimeError("Export cancelled")
-    return {
-        "rgba": rgba,
-        "heatmap": np.ascontiguousarray(heatmap, dtype=np.float32),
-        "changed_sample_count": sum(item.changed_sample_count for item in repairs),
-        "changed_pixel_count": sum(item.changed_pixel_count for item in repairs),
-        "protected_changed_sample_count": sum(
-            item.protected_changed_sample_count for item in repairs
-        ),
-        "protected_changed_pixel_count": sum(
-            item.protected_changed_pixel_count for item in repairs
-        ),
-    }
-
-
-def _compute_export_result(inputs, cancel_flag=None, progress=None):
-    """Repair copied stacks, then generate a byte-compatible threshold image."""
-
-    if bool(inputs.get("packed", False)):
-        return _compute_packed_export_result(inputs, cancel_flag, progress)
-
-    import numpy as np
-
-    from .symmetry import mirror_side_layer, mirror_side_stack
-
-    def cancelled():
-        return bool(cancel_flag is not None and int(getattr(cancel_flag, "value", 0)))
-
-    if cancelled():
-        raise RuntimeError("Export cancelled")
-
-    if bool(inputs["linked"]):
-        source = inputs["source"]
-        repair = _repair_export_lane(source, cancel_flag)
-        if cancelled():
-            raise RuntimeError("Export cancelled")
-        mode = inputs["mirror_mode"]
-        pairs = inputs.get("island_pairs")
-        mirrored = mirror_side_stack(repair.masks, mode, island_pairs=pairs)
-        angles = np.array(source[1], copy=True)
-        if inputs["author_side"] == "RIGHT":
-            threshold_inputs = (repair.masks, angles, mirrored, angles)
-        else:
-            threshold_inputs = (mirrored, angles, repair.masks, angles)
-        source_heatmap = _change_heatmap(repair.changed_mask)
-        heatmap = np.maximum(
-            source_heatmap,
-            mirror_side_layer(source_heatmap, mode, island_pairs=pairs),
-        )
-        repairs = (repair,)
-    else:
-        right = _repair_export_lane(inputs["right"], cancel_flag)
-        if cancelled():
-            raise RuntimeError("Export cancelled")
-        left = _repair_export_lane(inputs["left"], cancel_flag)
-        threshold_inputs = (
-            right.masks,
-            inputs["right"][1],
-            left.masks,
-            inputs["left"][1],
-        )
-        heatmap = np.maximum(
-            _change_heatmap(right.changed_mask),
-            _change_heatmap(left.changed_mask),
-        )
-        repairs = (right, left)
-
-    if cancelled():
-        raise RuntimeError("Export cancelled")
-    channels = _compute_threshold_channels(threshold_inputs, cancel_flag)
-    rgba = _pack_threshold_channels(channels, inputs["packing"])
     if cancelled():
         raise RuntimeError("Export cancelled")
     return {
@@ -4096,24 +3509,6 @@ def shutdown_export_job(
     return True
 
 
-def _generate(project, context):
-    inputs = _prepare_strict_threshold_inputs(project)
-    packing = _snapshot_packing_inputs(project)
-    window_manager = context.window_manager
-    window_manager.progress_begin(0, 2)
-    try:
-        window_manager.progress_update(1)
-        channels = _compute_threshold_channels(inputs)
-        rgba = _pack_threshold_channels(channels, packing)
-        runtime.update_threshold_preview(project, rgba)
-        window_manager.progress_update(2)
-    finally:
-        window_manager.progress_end()
-    project.dirty = False
-    project.validation_message = "Generated"
-    return rgba
-
-
 def _generate_export(project, context):
     inputs = _prepare_packed_threshold_inputs(project)
     window_manager = context.window_manager
@@ -4169,25 +3564,6 @@ class QUICKSDF_OT_packing_preview_channel(bpy.types.Operator):
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
         self.report({"INFO"}, f"Showing packed {self.output_channel}")
-        return {"FINISHED"}
-
-
-class QUICKSDF_OT_generate(bpy.types.Operator):
-    bl_idname = "quicksdf.generate"
-    bl_label = "Generate Threshold Texture"
-    bl_description = "Generate the 16-bit R/G light-angle threshold image"
-
-    def execute(self, context):
-        project = _require_project(self, context)
-        if project is None:
-            return {"CANCELLED"}
-        _discard_provisional(context, project)
-        try:
-            _generate(project, context)
-        except Exception as exc:
-            self.report({"ERROR"}, str(exc))
-            return {"CANCELLED"}
-        self.report({"INFO"}, "Threshold texture generated")
         return {"FINISHED"}
 
 
@@ -4446,11 +3822,27 @@ class QUICKSDF_OT_export_mask_sequence(bpy.types.Operator):
         directory_text = self.directory or context.scene.quick_sdf_settings.mask_sequence_directory
         directory = Path(bpy.path.abspath(directory_text))
         try:
-            masks, angles = runtime.project_mask_stack(project)
-            for mask, angle in zip(masks, angles):
-                sign = "p" if angle >= 0 else "m"
-                filename = f"mask_{sign}{abs(int(round(float(angle)))):03d}.png"
-                _write_mask_png(directory / filename, mask, bool(project.overwrite))
+            entries = sorted(
+                getattr(project, "angles", ()),
+                key=lambda item: (
+                    str(getattr(item, "side", "RIGHT")),
+                    float(getattr(item, "angle", 0.0)),
+                ),
+            )
+            if not entries:
+                raise ValueError("Project has no angle masks")
+            for item in entries:
+                image = runtime.resolve_display_image(project, item)
+                if image is None:
+                    raise ValueError("A review mask image is missing")
+                side = str(getattr(item, "side", "RIGHT")).lower()
+                angle = f"{float(item.angle):04.1f}".replace(".", "p")
+                filename = f"mask_{side}_{angle}.png"
+                _write_mask_png(
+                    directory / filename,
+                    runtime.image_mask(image),
+                    bool(project.overwrite),
+                )
         except (FileExistsError, OSError, ValueError) as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
@@ -4474,7 +3866,6 @@ CLASSES = (
     QUICKSDF_OT_key_add,
     QUICKSDF_OT_key_move,
     QUICKSDF_OT_key_delete,
-    QUICKSDF_OT_sync_canvas,
     QUICKSDF_OT_packing_customize,
     QUICKSDF_OT_packing_reset_liltoon,
     QUICKSDF_OT_packing_assign_active_mask,
@@ -4489,20 +3880,16 @@ CLASSES = (
     QUICKSDF_OT_boundary_track_remove,
     QUICKSDF_OT_paint_value_toggle,
     QUICKSDF_OT_paint_value_set,
-    QUICKSDF_OT_studio_display_mode,
     QUICKSDF_OT_symmetry_choose,
     QUICKSDF_OT_break_mirror,
     QUICKSDF_OT_mirror_toggle,
-    QUICKSDF_OT_clear_overrides,
     QUICKSDF_OT_propagate_overrides,
     QUICKSDF_OT_paint_snapshot,
     QUICKSDF_OT_range_paint,
     QUICKSDF_OT_range_paint_invert,
     QUICKSDF_OT_history_undo,
     QUICKSDF_OT_history_redo,
-    QUICKSDF_OT_validate,
     QUICKSDF_OT_packing_preview_channel,
-    QUICKSDF_OT_generate,
     QUICKSDF_OT_export_texture,
     QUICKSDF_OT_review_export_adjustments,
     QUICKSDF_OT_cancel_job,

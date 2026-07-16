@@ -1,4 +1,4 @@
-"""Headless Blender 5.1/5.2 smoke for schema-6 interactive Smart Paint.
+"""Headless Blender 5.1/5.2 smoke for interactive Smart Paint.
 
 Run from the repository root with::
 
@@ -221,7 +221,9 @@ def _test_hard_history_cap_rolls_back(project) -> None:
         soft_byte_budget=128,
         compression_level=0,
     )
-    assert history.push("older action", {}, {}, metadata={"marker": "keep"})
+    assert history.begin_transaction(
+        "older action", metadata={"marker": "keep"}
+    ).commit()
     operators._HISTORIES[str(project.uuid)] = history
 
     _expect_finished(bpy.ops.quicksdf.paint_snapshot(), "hard-cap snapshot")
@@ -255,7 +257,9 @@ def _test_aux_history_hard_cap_rolls_back(project) -> None:
     runtime.write_image_gray8(image, after)
 
     history = History(byte_budget=64, soft_byte_budget=64, compression_level=0)
-    assert history.push("older action", {}, {}, metadata={"marker": "keep"})
+    assert history.begin_transaction(
+        "older action", metadata={"marker": "keep"}
+    ).commit()
     operators._HISTORIES[str(project.uuid)] = history
     try:
         operators._record_aux_image_change(
@@ -326,18 +330,14 @@ def _test_structural_history(project) -> None:
         }
     }
     history = History(compression_level=1)
-    assert history.push(
-        "Paint + Auto Key",
-        {
-            f"display:{created_uuid}": display_before,
-            f"coverage:{created_uuid}": coverage_before,
-        },
-        {
-            f"display:{created_uuid}": display_after,
-            f"coverage:{created_uuid}": coverage_after,
-        },
-        metadata=metadata,
+    transaction = history.begin_transaction("Paint + Auto Key", metadata=metadata)
+    assert transaction.add_delta(
+        f"display:{created_uuid}", display_before, display_after
     )
+    assert transaction.add_delta(
+        f"coverage:{created_uuid}", coverage_before, coverage_after
+    )
+    assert transaction.commit()
     operators._HISTORIES[str(project.uuid)] = history
 
     _expect_finished(bpy.ops.quicksdf.history_undo(), "structural history_undo")
