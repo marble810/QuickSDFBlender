@@ -61,15 +61,15 @@ export default function BlenderWorkflowArticle() {
     <ArticleLayout
       article={article}
       titleParts={[
-        <>Quick SDF Paint <wbr />0.7.2で</>,
+        <>Quick SDF Paint <wbr />0.8.0で</>,
         <>顔影スレッショルド<wbr />マップを作る：</>,
         <>Blenderでの<wbr />実践手順</>,
       ]}
       toc={toc}
-      lead="Quick SDF Paint 0.7.2を使い、法線ガイドから顔影スレッショルドマップを書き出す実践手順です。角度ごとに別の影絵を完成させるのではなく、一つの影境界が制作上の進行度に応じて顔の上をどう移動するかを設計します。"
+      lead="Quick SDF Paint 0.8.0を使い、9キーの法線ガイドから顔影スレッショルドマップを書き出す実践手順です。キーごとに別の影絵を完成させるのではなく、一つの影境界が制作上の進行度に応じて顔の上をどう移動するかを設計します。"
     >
       <EvidenceNote title="動作確認条件">
-        <p>Blender 5.1／5.2 LTS、Quick SDF Paint 0.7.2、1024 px、0°～90°の既定8キー、左右ミラーを有効にした状態で確認しました。操作の列挙ではなく、設定の誤りを先に見分ける方法、大きな形から直す順番、顔の部位ごとの判断、静止画と動きの評価を中心にしています。</p>
+        <p>Blender 5.1／5.2 LTS、Quick SDF Paint 0.8.0、1024 px、0～100%の既定9キー、左右ミラーを有効にした状態で確認しました。操作の列挙ではなく、設定の誤りを先に見分ける方法、大きな形から直す順番、顔の部位ごとの判断、静止画と動きの評価を中心にしています。</p>
       </EvidenceNote>
 
       <h2 id="quick-start">完成までの最短5手順</h2>
@@ -121,7 +121,8 @@ export default function BlenderWorkflowArticle() {
         width={1920}
         height={1001}
       />
-      <p>タイムラインの0°、45°、90°は、頭部に対する物理的なライト角ではありません。0°は<code>Light Starts</code>、90°は<code>Full Light</code>、45°はその中間という制作上の進行度です。実際のライト方向からこの進行度への変換は、シェーダー側で行います。</p>
+      <p>タイムラインの0～100%は、頭部に対する物理的なライト角ではありません。これは制作上の進行度で、0%は<code>Light Starts</code>、100%は<code>Full Light</code>を表します。ただし中央50%は単なる補間点ではなく、真横方向から直接ベイクした<code>Side Light 90°</code>の編集キーです。</p>
+      <p><code>Side Light 90°</code>はライト方向を表します。顔の形、法線、<code>Shadow Amount</code>、手描き形状によって明暗の面積は変わるため、白黒が必ず半分になるという意味ではありません。</p>
       <p>まだ塗らずにタイムラインを端から端まで動かし、ガイド全体を診断します。次の状態なら局所修正へ進まず、設定を直します。</p>
       <ul>
         <li>ほぼすべてのキーが同じ形に見える</li>
@@ -141,15 +142,15 @@ export default function BlenderWorkflowArticle() {
       />
 
       <h2 id="order">3. 修正は「全体から細部」の順に行う</h2>
-      <p>8キーを左から順に完成させる必要はありません。次の順番にすると、各キーを独立した絵として作ってしまうのを避けられます。</p>
+      <p>9キーを左から順に完成させる必要はありません。次の順番にすると、各キーを独立した絵として作ってしまうのを避けられます。</p>
       <ol>
-        <li><code>Light Starts</code>の0°と<code>Full Light</code>の90°で変化の両端を確認する</li>
-        <li>進行度の中央付近で、顔影の印象を決める大きなシルエットを作る</li>
+        <li><code>Light Starts</code>の0%と<code>Full Light</code>の100%で変化の両端を確認する</li>
+        <li>中央50%の<code>Side Light 90°</code>で、顔影の印象を決める大きなシルエットを作る</li>
         <li>その前後で境界の出現と消失を整える</li>
         <li>タイムラインを連続して動かし、急な変形を探す</li>
         <li>隣接キーだけでは経路を作れない場所へ中間キーを追加する</li>
       </ol>
-      <p>中央付近は鼻を境に明暗が大きく分かれ、顔影の印象を判断しやすい段階です。ここで大きな形を決めると、ほかのキーでは「その形がどう現れ、どう消えるか」に集中できます。</p>
+      <p>中央の真横光は鼻を境に明暗が大きく分かれやすく、顔影の印象を判断しやすい段階です。ここで大きな形を決めると、ほかのキーでは「その形がどう現れ、どう消えるか」に集中できます。ただし明暗面積が50%になることを目標にはしません。</p>
       <ArticleFigure
         src={`${media}quick-sdf-normal-guide-and-paint.png`}
         alt="2DキャンバスとKipfelの3Dビューで同じ顔影境界をLightとShadowで修正している画面"
@@ -184,12 +185,13 @@ export default function BlenderWorkflowArticle() {
 
       <h2 id="motion">5. 一枚ずつではなく、連続した変化として確認する</h2>
       <p>キーをクリックすると、その位置が編集対象になります。キーの間へタイムラインを動かすと、補間された状態を確認できます。</p>
-      <p>キーの間で実際に画素を変更した場合に限り、自動キーが作られます。スクラブして確認するだけでは、画像もキーも増えません。</p>
+      <p>キーの間では補間結果を一時<code>Canvas</code>として表示し、その見た目を維持したまま塗れます。画素が0.5境界を実際に越え、書き出し結果へ影響する変更になった時だけCustomキーが確定します。スクラブ、同色の一筆、境界を越えない低Strengthの修正だけでは、永続Imageもキーも増えません。</p>
+      <p>低Strengthの筆跡は一時<code>Canvas</code>へ蓄積されます。複数回の筆跡で境界を越えた場合は、その時点でCustomキー、筆跡、Coverage、ほかのキーへの自動反映が1回のUndo／Redoへまとめられます。</p>
       <p>意図せず自動キーを作った場合は、その一筆を<code>Undo</code>するか、対象キーを選んで<code>Delete</code>します。</p>
       <ArticleFigure
         src={`${media}quick-sdf-angle-seek.gif`}
         reducedMotionSrc={`${media}quick-sdf-angle-seek-poster.png`}
-        alt="タイムラインを0°から90°まで動かすと2DマスクとKipfelの顔影が連続して変化する画面"
+        alt="タイムラインを0%から100%まで動かすと2DマスクとKipfelの顔影が連続して変化する画面"
         caption="ゆっくり動かして境界の方向を確認し、速く往復して小さな島の点滅や急な面積変化を探す。"
         width={800}
         height={450}
@@ -233,7 +235,7 @@ export default function BlenderWorkflowArticle() {
 
       <h2 id="export">8. 書き出し前と出力後の確認</h2>
       <ul>
-        <li>0°から90°まで明暗が一方向へ変化する</li>
+        <li>0%から100%まで明暗が一方向へ変化する</li>
         <li>鼻先や口元の小島が点滅しない</li>
         <li>顔影と髪の落ち影を混同していない</li>
         <li>左右の光で意図した側が変化する</li>

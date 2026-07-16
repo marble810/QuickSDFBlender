@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "quick_sdf_blender"
-version = "0.7.2"
+version = "0.8.0"
 name = "Quick SDF Paint"
 tagline = "Paint face-shadow threshold maps for toon rendering"
 maintainer = "hoshino"

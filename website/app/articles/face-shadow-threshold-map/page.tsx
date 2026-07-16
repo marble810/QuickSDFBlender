@@ -78,12 +78,12 @@ export default function FaceShadowThresholdMapArticle() {
 
       <h2 id="stored-value">保存するのは「影の濃さ」ではなく「切替位置」</h2>
       <p>ここでは4つの量を区別します。<code>L</code>は頭部のローカル座標で表した正規化ライト方向ベクトルです。<code>φ</code>は、<code>L</code>の前後・左右成分から求める水平方向の実ライト角です。</p>
-      <p><code>t</code>は、制作で定めた<code>Light Starts</code>から<code>Full Light</code>までを0～1に正規化した制作進行度です。<code>u(p)</code>は、UV画素<code>p</code>が明部へ切り替わる正規化位置を表します。画面に表示する0°～90°は<code>t</code>を操作しやすくするための制作上の目盛りで、物理的なライト角<code>φ</code>そのものではありません。</p>
+      <p><code>t</code>は、制作で定めた<code>Light Starts</code>から<code>Full Light</code>までを0～1に正規化した制作進行度です。<code>u(p)</code>は、UV画素<code>p</code>が明部へ切り替わる正規化位置を表します。Quick SDF Paintは<code>t</code>を0～100%で表示します。この割合は物理的なライト角<code>φ</code>そのものではありませんが、中央50%の<code>Side Light 90°</code>キーは真横方向から直接生成されます。</p>
       <p>以下では、明部をLight状態、影部をShadow状態と呼びます。顔のUV上に画素A、B、Cがあり、<code>t</code>を0から1へ進める場面を考えます。Aは早くLight状態になり、Bは途中で、Cは<code>Full Light</code>の近くまでShadow状態に残るとします。完成テクスチャには、3つの切替位置<code>u(A)</code>、<code>u(B)</code>、<code>u(C)</code>を保存します。</p>
       <pre><code>{`t = normalize(φ; Light Starts, Full Light)\nLight(t, p) = [ t ≥ u(p) ]`}</code></pre>
       <p>式中の<code>[条件]</code>は、条件が真なら1、偽なら0を返す二値判定を表します。</p>
       <p>実装によって白黒、比較方向、0と1の意味は反転します。しかし本質は、各画素が制作進行度<code>t</code>上に1つの切替位置<code>u(p)</code>を持つことです。中間のグレーは「半分だけ明るい画素」ではなく、「その位置で状態が切り替わる画素」を意味します。影色、境界のぼかし、影の濃さは、判定後にシェーダー側で適用できます。</p>
-      <p>Quick SDF Paint 0.7.2のlilToon向け既定出力では、正規化した切替位置を反転し、16-bitの値に量子化します。</p>
+      <p>Quick SDF Paint 0.8.0のlilToon向け既定出力では、正規化した切替位置を反転し、16-bitの値に量子化します。</p>
       <pre><code>{`q_lilToon(p) = round((1 - u(p)) × 65535)`}</code></pre>
       <p>この反転を知らずに<code>u</code>として直接比較すると明暗の進行が逆になります。出力先ごとにチャンネル、反転、比較方向を確認してください。</p>
       <p>一般的なシャドウマップ（Shadow Map）とも役割が異なります。シャドウマップはライトから見た奥行きを使い、そのフレームにおける幾何学的な遮蔽を判定します。顔影スレッショルドマップはUVに固定された制作データであり、髪や手が顔を遮ったかどうかは判定しません。実際のシェーダーでは、顔の主要な明暗境界、リアルタイム影、AO、固定マスクを組み合わせて使えます。</p>
@@ -208,7 +208,7 @@ export default function FaceShadowThresholdMapArticle() {
         <li>ライト方向<code>L</code>から求めた制作進行度<code>t</code>と比較する</li>
       </ol>
       <p>SDFは2番目を実現する1つの手段です。何でも解決する陰影方式ではなく、主に横方向へ変化する顔影を、アーティストが輪郭として設計するための限定されたデータ表現です。</p>
-      <p>Blender上で法線ガイドを下描きとして使う具体的な修正手順は、<a href={articlePath("blender-threshold-map-workflow")}>Quick SDF Paint 0.7.2で顔影スレッショルドマップを作る：Blenderでの実践手順</a>へ続きます。</p>
+      <p>Blender上で法線ガイドを下描きとして使う具体的な修正手順は、<a href={articlePath("blender-threshold-map-workflow")}>Quick SDF Paint 0.8.0で顔影スレッショルドマップを作る：Blenderでの実践手順</a>へ続きます。</p>
 
       <SourceList>
         <h2>主な参考資料</h2>

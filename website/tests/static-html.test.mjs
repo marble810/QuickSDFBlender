@@ -58,7 +58,7 @@ test("exports a GitHub Pages document with project-relative assets", async () =>
 
   assert.match(html, /<html[^>]+lang="ja"/i);
   assert.match(html, /Quick SDF Paint/);
-  assert.match(html, /v0\.7\.2/);
+  assert.match(html, /v0\.8\.0/);
   assert.match(html, /トゥーンレンダリング用の顔影スレッショルドマップを作成/);
   assert.match(html, /角度別の白黒マスク/);
   assert.match(html, /SDF距離補間/);
@@ -149,7 +149,7 @@ test("uses sourced terminology without presenting one spelling as a standard nam
   assert.doesNotMatch(publicCopy, disallowedLightmapAliases);
   assert.doesNotMatch(publicCopy, deprecatedLabels);
   assert.match(packageManifest, /"name": "quick-sdf-paint-docs"/);
-  assert.match(packageManifest, /"version": "0\.7\.2"/);
+  assert.match(packageManifest, /"version": "0\.8\.0"/);
 });
 
 test("keeps terminology as a lower-page reference", async () => {
@@ -271,7 +271,7 @@ const articlePages = [
   },
   {
     slug: "blender-threshold-map-workflow",
-    title: "Quick SDF Paint 0.7.2で顔影スレッショルドマップを作る",
+    title: "Quick SDF Paint 0.8.0で顔影スレッショルドマップを作る",
     uniqueText: "完成までの最短5手順",
     evidence: "動作確認条件",
   },
@@ -381,7 +381,7 @@ test("keeps Japanese article prose, notation, and UI labels consistent", async (
 
   assert.match(data, /顔影スレッショルドマップとは：仕組みと制作方法/);
   assert.match(data, /角度別マスクを1枚にまとめる方法：SDF距離補間の比較/);
-  assert.match(data, /Quick SDF Paint 0\.7\.2で顔影スレッショルドマップを作る：Blenderでの実践手順/);
+  assert.match(data, /Quick SDF Paint 0\.8\.0で顔影スレッショルドマップを作る：Blenderでの実践手順/);
   assert.match(index, /Quick SDF Paint 技術解説/);
   assert.match(index, /顔影スレッショルド<wbr\s*\/>マップの/);
   assert.match(layout, /<dt>読了時間<\/dt>/);
@@ -401,7 +401,7 @@ test("keeps Japanese article prose, notation, and UI labels consistent", async (
   assert.match(comparison, /className="article-wide-table"/);
   assert.match(comparison, /<SourceList>[\s\S]*?<h2>検証データと主な参考資料<\/h2>/);
 
-  assert.match(workflow, /1024 px、0°～90°/);
+  assert.match(workflow, /1024 px、0～100%の既定9キー/);
   assert.match(workflow, /<code>Create &amp; Edit<\/code>/);
   assert.match(workflow, /<code>Light<\/code>／<code>Shadow<\/code>/);
   assert.match(workflow, /<code>Material Slot<\/code>/);
@@ -459,7 +459,7 @@ test("publishes source-backed original research rather than unsupported SDF clai
   }
   assert.match(html, /結果を見た後のパラメーター調整なし/);
   assert.match(html, /1°～89°の89点/);
-  assert.match(html, /既定8キーとは異なり/);
+  assert.match(html, /既定9キーとは異なり/);
   assert.doesNotMatch(html, /89中間角度|5度刻みの36枚|d_i\+1|S_i\+1|C0連続/);
   assert.match(html, /最寄りの反対クラスの画素中心までの距離/);
   assert.match(html, /元の連続輪郭[^<]*復元できるという意味ではありません/);
@@ -470,18 +470,20 @@ test("publishes source-backed original research rather than unsupported SDF clai
   assert.match(html, /TPAMI\.2003\.1177156/);
 });
 
-test("documents the Quick SDF Paint 0.7.2 artist workflow without hidden steps", async () => {
+test("documents the Quick SDF Paint 0.8.0 artist workflow without hidden steps", async () => {
   const html = await readFile(
     new URL("../out/articles/blender-threshold-map-workflow/index.html", import.meta.url),
     "utf8",
   );
-  assert.match(html, /Quick SDF Paint 0\.7\.2を使い/);
+  assert.match(html, /Quick SDF Paint 0\.8\.0を使い/);
   assert.match(html, /完成までの最短5手順/);
   assert.match(html, /16-bit RGBA PNG/);
-  assert.match(html, /0°は<code>Light Starts<\/code>、90°は<code>Full Light<\/code>/);
+  assert.match(html, /0%は<code>Light Starts<\/code>、100%は<code>Full Light<\/code>/);
+  assert.match(html, /中央50%[^<]*<code>Side Light 90°<\/code>/);
+  assert.match(html, /白黒が必ず半分になるという意味ではありません/);
   assert.match(html, /Shadow Amount[\s\S]{0,80}調整し、その後に<code>Update Shadow Guide<\/code>/);
-  assert.match(html, /キーの間で実際に画素を変更した場合に限り[^<]*自動キー/);
-  assert.match(html, /スクラブして確認するだけでは、画像もキーも増えません/);
+  assert.match(html, /画素が0\.5境界を実際に越え[^<]*Customキー/);
+  assert.match(html, /スクラブ[^<]*境界を越えない低Strengthの修正だけでは[^<]*永続Imageもキーも増えません/);
   assert.match(html, /<code>Undo<\/code>[\s\S]{0,80}<code>Delete<\/code>/);
   assert.match(html, /SDF Area[\s\S]{0,100}Quick SDF Paint共通の補助マスク/);
   assert.match(html, /同じUV座標へ重なっている場合[^<]*補助マスクだけでは分離できません[\s\S]{0,120}マテリアルスロットまたはUVを分ける必要/);
