@@ -1,6 +1,6 @@
 # Quick SDF Paint 0.7.1
 
-0.7.1は、製品名と用語を実際の用途に合わせて整理するリリースです。0.7.0までの編集機能、Projectデータ、出力形式は変更していません。
+0.7.1は、製品名と用語を実際の用途に合わせて整理するリリースです。
 
 ## 製品名と目的
 
@@ -14,15 +14,7 @@
 - Extension、ワークスペース、パネル、ツールチップ、ガイドの公開製品名を`Quick SDF Paint`へ統一しました。
 - 通常の書き出し操作を`Export Threshold Map`へ変更しました。
 - Nパネルの`Quick SDF`タブ名は変更していません。
-- 既存の`Quick SDF Studio`ワークスペースは、重複を作らず`Quick SDF Paint`へ改名して再利用します。
 - lilToon／liltoonUEは製品全体の定義ではなく、出力先シェーダーの対応例として案内します。
-
-## 互換性
-
-- Project schemaは6、Native core ABIは7のままです。
-- 0.6.x／0.7.0のProjectを変更せず開けます。
-- `quicksdf.*` Operator ID、`QSDF_*` RNA ID、保存プロパティ、Pythonパッケージ名、Extension IDは変更していません。
-- 既定のlilToon向けRGBA16パッキングと、同じ入力に対する出力画素値は0.7.0と同一です。
 - 過去のリリースノートでは、当時の製品名をそのまま記載しています。
 
 ## 対象環境

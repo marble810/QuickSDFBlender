@@ -1,6 +1,6 @@
 # Quick SDF Studio 0.7.0
 
-0.7.0は、アーティスト向けの操作とRGBA16出力を変えず、2048pxの実制作を軽くする性能更新です。
+0.7.0は、2048pxの実制作を軽くする性能更新です。
 
 ## 主な変更
 
@@ -13,14 +13,7 @@
 - Boundary再生成時は、解放済みDisplayをcold reloadしてgray8経路で更新します。
 - Exportは最大16キーを画素ごとのbit fieldへまとめ、修復、Exact EDT、RGBA packing、PNG圧縮を低メモリで実行します。
 - PNGは保存先と同じフォルダーの一時ファイルへworkerが書き込み、revision確認後にatomicに公開します。
-- Native core ABIを7へ更新しました。
-
-## 互換性
-
-- Project schemaは6のままです。0.6.0／0.6.1のProjectを変更せず開けます。
-- Operator ID、Packing Recipe、lilToon向けチャンネル構成は変更していません。
-- PNGコンテナの圧縮方法は変わりますが、デコード後のRGBA16全画素は同じ入力に対して0.6.1と完全一致します。
-- Python fallbackは正確性を維持します。性能目標は同梱Windows x64 Native coreを使用した場合が対象です。
+- Python fallbackも利用できます。性能目標は同梱Windows x64 Native coreを使用した場合が対象です。
 
 ## 検証結果
 

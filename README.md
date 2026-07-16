@@ -22,10 +22,7 @@ Quick SDF Paintは、Blender 5.1／5.2 LTS上でトゥーンレンダリング�
 
 書き出すRGBAの割り当てはプロジェクトごとに変更できます。通常は設定を触らず、そのまま1ボタンで書き出せます。
 
-schema 6では、Texture Paintに必要なDisplayだけをRGBA8 Imageとして保持し、Baseと手描き範囲は検証付き1-bit bitplaneとして保存します。キーを追加しても補助レイヤーがRGBA Imageとして増えないため、従来より少ないメモリで細かな角度制御ができます。
-
-> [!WARNING]
-> 0.7.2もProject schema 6を維持しています。0.6.x以降で作成したProjectをそのまま開けます。schema 5以前を移行する処理はありません。
+Texture Paintに必要なDisplayだけをRGBA8 Imageとして保持し、Baseと手描き範囲は検証付き1-bit bitplaneとして保存します。キーを追加しても補助レイヤーがRGBA Imageとして増えないため、メモリ消費を抑えながら細かな角度制御ができます。
 
 詳しい使い方は[Web操作ガイド](https://yeczrtu.github.io/QuickSDFBlender/)または[日本語ユーザーガイド](docs/USER_GUIDE_JA.md)を参照してください。
 
@@ -100,7 +97,7 @@ Quick SDF Paintが出力するのは「顔影スレッショルドマップ」�
 > [!NOTE]
 > **UE5版からの系譜**
 >
-> Quick SDF Paintは、UE5向けの[QuickSDFTool](https://github.com/yeczrtu/QuickSDFTool)で培った角度別マスクとSDF距離補間の考え方を基に、Blenderとアーティスト向けの操作体験へ再設計した後継プロジェクトです。UE5版とのデータ互換を目的にした移植ではなく、UI、編集フロー、出力形式はBlender用に作り直しています。UE5版の開発は終了しており、既存のソースコードとリリースは参照用として引き続き公開されています。
+> Quick SDF Paintは、UE5向けの[QuickSDFTool](https://github.com/yeczrtu/QuickSDFTool)で培った角度別マスクとSDF距離補間の考え方を基に、Blenderのアーティスト向け操作体験として再設計した後継プロジェクトです。UE5版の開発は終了しており、既存のソースコードとリリースは参照用として引き続き公開されています。
 
 ## Development
 

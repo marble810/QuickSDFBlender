@@ -1,6 +1,6 @@
 # Quick SDF Studio 0.6.1
 
-0.6.1は、0.6.0の自動角度キーを実制作で安定して使うための修正リリースです。Project schema 6、Native core ABI 6、RGBA16出力は変更していません。
+0.6.1は、自動角度キーを実制作で安定して使うための修正リリースです。
 
 ## タイムライン
 
@@ -15,9 +15,4 @@
 - Blenderが生成ImageをCanvasへ割り当て直した際、黒い初期色へ戻る問題を修正しました。
 - 同色の一筆、Projection Paintの空振り、キャンセルではキーを追加しません。
 - Blender標準の長いモーダルストロークを監視し、キャンセル時はCanvasとCoverageを描画前へ戻します。
-- 自動キー作成、Smart Paint伝播、Undo／Redoは引き続き1操作として扱います。
-
-## 互換性
-
-- 0.6.0で作成したschema 6 Projectをそのまま利用できます。
-- 出力パッキングとlilToon向けR/G値は0.6.0から変更していません。
+- 自動キー作成、Smart Paint伝播、Undo／Redoは1操作として扱います。

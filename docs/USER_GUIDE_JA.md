@@ -224,10 +224,6 @@ Project作成時に、次の2枚が自動で用意されます。
 
 Importは元Imageを変更しません。選んだ成分をProject解像度へリサンプルし、Quick SDF専用の内部グレースケールImageへコピーします。その後は`.blend`内のコピーが編集元になります。
 
-### 既存Projectとの互換性
-
-0.7.2はschema 6を維持し、0.6.x／0.7.xのProjectをそのまま開けます。schema 5以前のProjectを変換する処理はありません。Texture Paint用DisplayはRGBA8 Image、Baseと手描き範囲はCRC付き1-bit bitplaneとして`.blend`内へ保存されます。Native core ABIは7です。2048px以上では、作業中のキーと前後キーを優先して読み込み、その他は`.blend`内のpacked dataから必要時に復元します。
-
 ## 困ったとき
 
 ### Create & Editが表示されない
