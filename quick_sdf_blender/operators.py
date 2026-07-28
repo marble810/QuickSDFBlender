@@ -639,7 +639,7 @@ def _create_project_data(context, *, sync_ui: bool = True, activate: bool = True
     project.uuid = runtime.new_uuid()
     project.name = f"{obj.name} Face Shadow"
     project.target_object = obj
-    project.material_slot_index = max(0, int(obj.active_material_index))
+    project.material_slot_index = runtime.suggest_material_slot(obj)
     project.uv_map_name = obj.data.uv_layers.active.name
     project.resolution = int(settings.resolution)
     project.authoring_side = "RIGHT"

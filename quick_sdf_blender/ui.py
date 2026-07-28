@@ -305,8 +305,16 @@ class QSDF_PT_launcher(bpy.types.Panel):
                 return
             info = layout.box()
             info.label(text=obj.name, icon="OUTLINER_OB_MESH")
-            material = obj.active_material.name if obj.active_material else "A material will be created"
-            info.label(text=material, icon="MATERIAL")
+            slot_index = runtime.suggest_material_slot(obj)
+            material = (
+                obj.material_slots[slot_index].material
+                if 0 <= slot_index < len(obj.material_slots)
+                else None
+            )
+            material_name = material.name if material else "A material will be created"
+            if obj.material_slots and slot_index != int(obj.active_material_index):
+                material_name = f"{material_name} (suggested)"
+            info.label(text=material_name, icon="MATERIAL")
             button = layout.column()
             button.scale_y = 1.7
             button.operator("quicksdf.create_and_edit", text="Create & Edit", icon="BRUSH_DATA")

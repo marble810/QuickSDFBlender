@@ -1,17 +1,20 @@
 """Interactive Blender 5.1/5.2 regression for a real 3D Projection Paint stroke.
 
 Unlike array-level Smart Paint tests, this drives Quick SDF's public paint
-macro with ``PAINT_OT_image_paint`` stroke elements in a VIEW_3D region.  A
-camera-facing plane with one full-tile UV removes Cube face and hidden-island
-ambiguity from the result.
+macro with ``PAINT_OT_image_paint`` stroke elements in a VIEW_3D region. Two
+overlapping material shells reproduce avatar face overlays: the saved active
+slot is transparent detail, while Quick SDF must select and paint only the
+underlying Face surface.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 import sys
 import time
 import traceback
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,24 +26,77 @@ from bpy_extras import view3d_utils  # noqa: E402
 
 
 RESULT_PATH = ROOT / "build" / "projection_paint_smoke_result.txt"
+ACTIVE_SAVE_PATH = ROOT / "build" / "projection_paint_active_save.blend"
+ACTIVE_SAVE_COPY_PATH = ROOT / "build" / "projection_paint_active_save_copy.blend"
 STATE: dict[str, object] = {"waits": 0, "phase": "OPENING"}
+
+
+def _check_material_suggestions(runtime) -> None:
+    def suggestion(names, active, assignments):
+        slots = tuple(
+            SimpleNamespace(material=SimpleNamespace(name=name) if name else None)
+            for name in names
+        )
+        polygons = tuple(
+            SimpleNamespace(material_index=int(index)) for index in assignments
+        )
+        obj = SimpleNamespace(
+            material_slots=slots,
+            active_material_index=int(active),
+            data=SimpleNamespace(polygons=polygons),
+        )
+        return runtime.suggest_material_slot(obj)
+
+    assert suggestion(("Face", "Face_transparent", "Eye"), 1, (0, 0, 1, 1, 2)) == 0
+    assert suggestion(("Face", "FaceTransparent"), 1, (0, 0, 1, 1)) == 0
+    assert suggestion(("顔", "顔透明"), 1, (0, 0, 1, 1)) == 0
+    assert suggestion(("Skin_Head", "Skin_Body"), 0, (0, 0, 1, 1, 1)) == 0
+    assert suggestion(("Unused Face", "Face_transparent"), 1, (1, 1)) == 1
+    assert suggestion(("Torso", "Eye"), 1, (0, 0, 0, 1)) == 1
+    assert suggestion((None, "Face.001"), 0, (0, 1, 1)) == 1
 
 
 def _plane() -> bpy.types.Object:
     bpy.ops.object.select_all(action="SELECT")
     bpy.ops.object.delete(use_global=False)
-    bpy.ops.mesh.primitive_plane_add(size=2.0)
-    obj = bpy.context.object
-    obj.name = "Quick SDF Projection Paint Plane"
-    uv_layer = obj.data.uv_layers.active or obj.data.uv_layers.new(name="PaintUV")
-    for loop in obj.data.loops:
-        co = obj.data.vertices[loop.vertex_index].co
-        uv_layer.data[loop.index].uv = (co.x * 0.5 + 0.5, co.y * 0.5 + 0.5)
-    obj.data.uv_layers.active = uv_layer
-    material = bpy.data.materials.new("Projection Paint Source")
-    material.use_nodes = True
-    material.node_tree.nodes.clear()
-    obj.data.materials.append(material)
+    vertices = (
+        (-1.0, -1.0, 0.0), (1.0, -1.0, 0.0), (1.0, 1.0, 0.0), (-1.0, 1.0, 0.0),
+        (-1.0, -1.0, 0.01), (1.0, -1.0, 0.01), (1.0, 1.0, 0.01), (-1.0, 1.0, 0.01),
+        (-1.0, -1.0, -0.01), (1.0, -1.0, -0.01), (1.0, 1.0, -0.01), (-1.0, 1.0, -0.01),
+    )
+    mesh = bpy.data.meshes.new("Quick SDF Layered Face Mesh")
+    mesh.from_pydata(
+        vertices,
+        (),
+        ((0, 1, 2, 3), (4, 5, 6, 7), (8, 9, 10, 11)),
+    )
+    mesh.polygons[0].material_index = 0
+    mesh.polygons[1].material_index = 1
+    mesh.polygons[2].material_index = 0
+    obj = bpy.data.objects.new("Quick SDF Layered Face", mesh)
+    bpy.context.collection.objects.link(obj)
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    uv_layer = mesh.uv_layers.new(name="PaintUV")
+    wrong_uv = mesh.uv_layers.new(name="WrongUV")
+    for polygon in mesh.polygons:
+        u0, u1 = ((0.05, 0.45) if polygon.material_index == 0 else (0.55, 0.95))
+        coordinates = ((u0, 0.05), (u1, 0.05), (u1, 0.95), (u0, 0.95))
+        for loop_index, uv in zip(polygon.loop_indices, coordinates, strict=True):
+            uv_layer.data[loop_index].uv = uv
+            wrong_uv.data[loop_index].uv = (1.0 - uv[0], uv[1])
+    mesh.uv_layers.active = uv_layer
+    for name in ("Face", "Face_transparent"):
+        material = bpy.data.materials.new(name)
+        material.use_nodes = True
+        material.node_tree.nodes.clear()
+        obj.data.materials.append(material)
+    obj.active_material_index = 1
+    mesh.use_paint_mask = False
+    mesh.polygons[0].select = False
+    mesh.polygons[1].select = True
+    mesh.polygons[2].select = True
+    mesh.polygons[2].hide = True
     return obj
 
 
@@ -90,6 +146,39 @@ def _finish(error: BaseException | None = None) -> None:
     bpy.ops.wm.quit_blender()
 
 
+def _check_active_save_restoration(obj: bpy.types.Object) -> None:
+    ACTIVE_SAVE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    ACTIVE_SAVE_PATH.unlink(missing_ok=True)
+    ACTIVE_SAVE_COPY_PATH.unlink(missing_ok=True)
+    assert bpy.ops.wm.save_as_mainfile(filepath=str(ACTIVE_SAVE_PATH)) == {"FINISHED"}
+
+    # save_post must resume the live isolated paint surface.
+    assert obj.data.use_paint_mask
+    assert int(obj.active_material_index) == 0
+    assert obj.data.uv_layers.active.name == "PaintUV"
+    assert [bool(polygon.select) for polygon in obj.data.polygons] == [True, False, False]
+    assert [bool(polygon.hide) for polygon in obj.data.polygons] == [False, False, True]
+
+    # The serialized .blend itself must contain the artist's original state.
+    shutil.copy2(ACTIVE_SAVE_PATH, ACTIVE_SAVE_COPY_PATH)
+    with bpy.data.libraries.load(str(ACTIVE_SAVE_COPY_PATH), link=False) as (data_from, data_to):
+        assert obj.name in data_from.objects
+        data_to.objects = [obj.name]
+    saved_obj = data_to.objects[0]
+    assert saved_obj is not None
+    saved_mesh = saved_obj.data
+    try:
+        assert not saved_mesh.use_paint_mask
+        assert int(saved_obj.active_material_index) == 1
+        assert saved_mesh.uv_layers.active.name == "WrongUV"
+        assert [bool(polygon.select) for polygon in saved_mesh.polygons] == [False, True, True]
+        assert [bool(polygon.hide) for polygon in saved_mesh.polygons] == [False, False, True]
+    finally:
+        bpy.data.objects.remove(saved_obj)
+        if saved_mesh.users == 0:
+            bpy.data.meshes.remove(saved_mesh)
+
+
 def _paint() -> float | None:
     try:
         from quick_sdf_blender import preview, runtime, studio
@@ -112,6 +201,13 @@ def _paint() -> float | None:
         view_space = view_area.spaces.active
 
         if STATE["phase"] == "OPENING":
+            assert obj.data.use_paint_mask
+            assert not bool(getattr(obj.data, "use_paint_mask_vertex", False))
+            assert int(obj.active_material_index) == 0
+            assert obj.data.uv_layers.active.name == str(project.uv_map_name) == "PaintUV"
+            assert [bool(polygon.select) for polygon in obj.data.polygons] == [True, False, False]
+            assert [bool(polygon.hide) for polygon in obj.data.polygons] == [False, False, True]
+            _check_active_save_restoration(obj)
             STATE["phase"] = "VIEW_READY"
             with bpy.context.temp_override(
                 window=bpy.context.window,
@@ -218,6 +314,8 @@ def _paint() -> float | None:
         coverage_after = runtime.coverage_mask(angle_item)
         changed = np.any(np.abs(after[..., :3] - before[..., :3]) > (0.5 / 255.0), axis=2)
         assert np.any(changed)
+        assert np.any(changed[:, : changed.shape[1] // 2])
+        assert not np.any(changed[:, changed.shape[1] // 2 :])
         assert np.all(coverage_after[changed])
         assert np.any(after[..., 0] < 0.5)
         assert project.first_stroke_complete
@@ -262,6 +360,14 @@ def _paint() -> float | None:
 
         print("PROJECTION_PAINT_CHANGED_PIXELS", int(np.count_nonzero(changed)))
         print("PROJECTION_PAINT_SECONDS", f"{elapsed:.4f}")
+        obj.name = "Quick SDF Layered Face Renamed"
+        obj.data.name = "Quick SDF Layered Face Mesh Renamed"
+        assert bpy.ops.quicksdf.studio_exit() == {"FINISHED"}
+        assert not obj.data.use_paint_mask
+        assert int(obj.active_material_index) == 1
+        assert obj.data.uv_layers.active.name == "WrongUV"
+        assert [bool(polygon.select) for polygon in obj.data.polygons] == [False, True, True]
+        assert [bool(polygon.hide) for polygon in obj.data.polygons] == [False, False, True]
         print("[Quick SDF projection paint smoke] PASS")
         _finish()
     except Exception as error:
@@ -278,13 +384,16 @@ def _run() -> None:
         }
         from quick_sdf_blender import runtime
 
+        _check_material_suggestions(runtime)
         obj = _plane()
         scene = bpy.context.scene
         scene.quick_sdf_settings.resolution = 1024
         scene.quick_sdf_settings.initialization = "WHITE"
         assert bpy.ops.quicksdf.project_create() == {"FINISHED"}
         project = runtime.active_project(scene)
-        assert project is not None
+        assert project is not None and int(project.material_slot_index) == 0
+        assert str(project.uv_map_name) == "PaintUV"
+        obj.data.uv_layers.active = obj.data.uv_layers["WrongUV"]
         assert bpy.ops.quicksdf.studio_enter() == {"FINISHED"}
         STATE.update(object=obj, project=project)
         bpy.app.timers.register(_paint, first_interval=0.1)

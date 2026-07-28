@@ -8,6 +8,8 @@ paint state.
 
 from __future__ import annotations
 
+from array import array
+import base64
 from dataclasses import dataclass
 import ctypes
 import json
@@ -66,6 +68,19 @@ class StudioSession:
     previous_normal_falloff: bool | None = None
     previous_clip_starts: tuple[tuple[int, float], ...] = ()
     projection_settings_suspended: bool = False
+    paint_surface_object_name: str = ""
+    paint_surface_mesh_name: str = ""
+    paint_surface_object_pointer: int = 0
+    paint_surface_mesh_pointer: int = 0
+    paint_surface_polygon_count: int = 0
+    paint_surface_slot_index: int = -1
+    paint_surface_previous_use_mask: bool | None = None
+    paint_surface_previous_use_mask_vertex: bool | None = None
+    paint_surface_previous_selection: bytes = b""
+    paint_surface_previous_hidden: bytes = b""
+    paint_surface_previous_active_material_index: int = -1
+    paint_surface_previous_uv_index: int = -1
+    paint_surface_suspended: bool = False
     stroke_brush_name: str = ""
     stroke_brush_color: tuple[float, float, float] | None = None
     stroke_brush_secondary_color: tuple[float, float, float] | None = None
@@ -1831,6 +1846,256 @@ def _adaptive_clip_start(obj: Any | None) -> float:
     return max(1.0e-6, extent * 1.0e-4)
 
 
+def _clear_paint_surface_snapshot(session: StudioSession) -> None:
+    session.paint_surface_object_name = ""
+    session.paint_surface_mesh_name = ""
+    session.paint_surface_object_pointer = 0
+    session.paint_surface_mesh_pointer = 0
+    session.paint_surface_polygon_count = 0
+    session.paint_surface_slot_index = -1
+    session.paint_surface_previous_use_mask = None
+    session.paint_surface_previous_use_mask_vertex = None
+    session.paint_surface_previous_selection = b""
+    session.paint_surface_previous_hidden = b""
+    session.paint_surface_previous_active_material_index = -1
+    session.paint_surface_previous_uv_index = -1
+    session.paint_surface_suspended = False
+
+
+def _paint_surface_ids(session: StudioSession) -> tuple[Any | None, Any | None]:
+    obj = None
+    mesh = None
+    object_pointer = int(session.paint_surface_object_pointer)
+    mesh_pointer = int(session.paint_surface_mesh_pointer)
+    if object_pointer:
+        obj = next(
+            (
+                candidate
+                for candidate in bpy.data.objects
+                if int(candidate.as_pointer()) == object_pointer
+            ),
+            None,
+        )
+    if mesh_pointer:
+        mesh = next(
+            (
+                candidate
+                for candidate in bpy.data.meshes
+                if int(candidate.as_pointer()) == mesh_pointer
+            ),
+            None,
+        )
+    if obj is None:
+        obj = bpy.data.objects.get(session.paint_surface_object_name)
+    if mesh is None:
+        mesh = bpy.data.meshes.get(session.paint_surface_mesh_name)
+    if obj is not None and getattr(obj, "type", "") == "MESH":
+        obj_mesh = getattr(obj, "data", None)
+        if mesh is None or obj_mesh == mesh:
+            mesh = obj_mesh
+    if obj is None and mesh is not None:
+        obj = next(
+            (candidate for candidate in bpy.data.objects if candidate.data == mesh),
+            None,
+        )
+    return obj, mesh
+
+
+def _paint_surface_recovery_record(session: StudioSession) -> dict[str, Any] | None:
+    if not session.paint_surface_object_name:
+        return None
+    obj, mesh = _paint_surface_ids(session)
+    object_name = str(getattr(obj, "name", session.paint_surface_object_name))
+    mesh_name = str(getattr(mesh, "name", session.paint_surface_mesh_name))
+    session.paint_surface_object_name = object_name
+    session.paint_surface_mesh_name = mesh_name
+    return {
+        "project_uuid": str(session.project_uuid),
+        "object": object_name,
+        "mesh": mesh_name,
+        "polygon_count": int(session.paint_surface_polygon_count),
+        "use_mask": session.paint_surface_previous_use_mask,
+        "use_mask_vertex": session.paint_surface_previous_use_mask_vertex,
+        "selection": base64.b64encode(
+            session.paint_surface_previous_selection
+        ).decode("ascii"),
+        "hidden": base64.b64encode(
+            session.paint_surface_previous_hidden
+        ).decode("ascii"),
+        "active_material_index": int(
+            session.paint_surface_previous_active_material_index
+        ),
+        "uv_index": int(session.paint_surface_previous_uv_index),
+    }
+
+
+def _restore_paint_surface_record(record: Any) -> bool:
+    if not isinstance(record, dict):
+        return record is None
+    project = _resolve_project_uuid(str(record.get("project_uuid", "")))
+    project_obj = getattr(project, "target_object", None) if project is not None else None
+    obj = bpy.data.objects.get(str(record.get("object", "")))
+    if obj is None and getattr(project_obj, "type", "") == "MESH":
+        obj = project_obj
+    mesh = bpy.data.meshes.get(str(record.get("mesh", "")))
+    if mesh is None and getattr(obj, "type", "") == "MESH":
+        mesh = getattr(obj, "data", None)
+    if obj is None and mesh is not None:
+        obj = next(
+            (candidate for candidate in bpy.data.objects if candidate.data == mesh),
+            None,
+        )
+    count = int(record.get("polygon_count", 0))
+    if mesh is None:
+        return False
+    success = True
+    try:
+        selection = base64.b64decode(str(record.get("selection", "")), validate=True)
+        hidden = base64.b64decode(str(record.get("hidden", "")), validate=True)
+    except (TypeError, ValueError):
+        selection = b""
+        hidden = b""
+        success = False
+    if len(mesh.polygons) == count and len(selection) == count and len(hidden) == count:
+        try:
+            mesh.polygons.foreach_set("select", array("b", selection))
+            mesh.polygons.foreach_set("hide", array("b", hidden))
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            success = False
+    else:
+        success = False
+    use_mask = record.get("use_mask")
+    if use_mask is not None:
+        try:
+            mesh.use_paint_mask = bool(use_mask)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError):
+            success = False
+    use_mask_vertex = record.get("use_mask_vertex")
+    if use_mask_vertex is not None and hasattr(mesh, "use_paint_mask_vertex"):
+        try:
+            mesh.use_paint_mask_vertex = bool(use_mask_vertex)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError):
+            success = False
+    active_material_index = int(record.get("active_material_index", -1))
+    if obj is not None and 0 <= active_material_index < len(obj.material_slots):
+        try:
+            obj.active_material_index = active_material_index
+        except (AttributeError, ReferenceError, RuntimeError, TypeError):
+            success = False
+    uv_index = int(record.get("uv_index", -1))
+    if getattr(mesh, "uv_layers", None) and 0 <= uv_index < len(mesh.uv_layers):
+        try:
+            mesh.uv_layers.active_index = uv_index
+        except (AttributeError, ReferenceError, RuntimeError, TypeError):
+            success = False
+    try:
+        mesh.update()
+    except (AttributeError, ReferenceError, RuntimeError, TypeError):
+        success = False
+    return success
+
+
+def _restore_paint_surface_isolation(
+    session: StudioSession,
+    *,
+    clear: bool,
+) -> bool:
+    record = _paint_surface_recovery_record(session)
+    restored = _restore_paint_surface_record(record)
+    if restored:
+        if clear:
+            _clear_paint_surface_snapshot(session)
+        else:
+            session.paint_surface_suspended = True
+    return restored
+
+
+def _apply_paint_surface_isolation(
+    project: Any,
+    session: StudioSession,
+    *,
+    scene: Any | None = None,
+    window: Any | None = None,
+) -> None:
+    """Limit native Projection Paint to the project's material and UV surface."""
+
+    obj = getattr(project, "target_object", None)
+    if obj is None or getattr(obj, "type", "") != "MESH":
+        raise StudioError("The Quick SDF paint surface is unavailable")
+    mesh = obj.data
+    slot_index = int(project.material_slot_index)
+    if not 0 <= slot_index < len(obj.material_slots):
+        raise StudioError("The Quick SDF material slot is unavailable")
+    uv_layer = mesh.uv_layers.get(str(project.uv_map_name))
+    if uv_layer is None:
+        raise StudioError("The Quick SDF UV map is unavailable")
+
+    snapshot_matches = bool(
+        session.paint_surface_object_name == obj.name
+        and session.paint_surface_mesh_name == mesh.name
+        and session.paint_surface_polygon_count == len(mesh.polygons)
+        and session.paint_surface_slot_index == slot_index
+    )
+    if session.paint_surface_object_name and not snapshot_matches:
+        if not _restore_paint_surface_isolation(session, clear=True):
+            raise StudioError("The previous Quick SDF paint surface could not be restored")
+    if not session.paint_surface_object_name:
+        count = len(mesh.polygons)
+        selected = array("b", [0]) * count
+        hidden = array("b", [0]) * count
+        mesh.polygons.foreach_get("select", selected)
+        mesh.polygons.foreach_get("hide", hidden)
+        session.paint_surface_object_name = obj.name
+        session.paint_surface_mesh_name = mesh.name
+        session.paint_surface_object_pointer = int(obj.as_pointer())
+        session.paint_surface_mesh_pointer = int(mesh.as_pointer())
+        session.paint_surface_polygon_count = count
+        session.paint_surface_slot_index = slot_index
+        session.paint_surface_previous_use_mask = bool(mesh.use_paint_mask)
+        session.paint_surface_previous_use_mask_vertex = (
+            bool(mesh.use_paint_mask_vertex)
+            if hasattr(mesh, "use_paint_mask_vertex")
+            else None
+        )
+        session.paint_surface_previous_selection = selected.tobytes()
+        session.paint_surface_previous_hidden = hidden.tobytes()
+        session.paint_surface_previous_active_material_index = int(
+            obj.active_material_index
+        )
+        session.paint_surface_previous_uv_index = int(mesh.uv_layers.active_index)
+
+    if scene is not None and window is not None:
+        _store_projection_recovery(scene, session, window)
+
+    count = len(mesh.polygons)
+    original_hidden = session.paint_surface_previous_hidden
+    selection = array(
+        "b",
+        (
+            1
+            if int(polygon.material_index) == slot_index and not original_hidden[index]
+            else 0
+            for index, polygon in enumerate(mesh.polygons)
+        ),
+    )
+    hidden = array("b", original_hidden)
+    if len(selection) != count or len(hidden) != count:
+        raise StudioError("The Quick SDF mesh topology changed while painting")
+    if count and not any(selection):
+        raise StudioError("All faces in the Quick SDF material slot are hidden")
+    mesh.polygons.foreach_set("select", selection)
+    mesh.polygons.foreach_set("hide", hidden)
+    mesh.use_paint_mask = True
+    if hasattr(mesh, "use_paint_mask_vertex"):
+        mesh.use_paint_mask_vertex = False
+    obj.active_material_index = slot_index
+    mesh.uv_layers.active_index = next(
+        index for index, candidate in enumerate(mesh.uv_layers) if candidate == uv_layer
+    )
+    mesh.update()
+    session.paint_surface_suspended = False
+
+
 def _store_projection_recovery(
     scene: Any,
     session: StudioSession,
@@ -1840,22 +2105,38 @@ def _store_projection_recovery(
 
     workspace = getattr(window, "workspace", None)
     screen = getattr(window, "screen", None)
-    if workspace is None or screen is None or workspace.get(PROJECTION_RECOVERY_KEY):
+    if workspace is None or screen is None:
         return
     image_paint = scene.tool_settings.image_paint
+    previous_clip_starts = dict(session.previous_clip_starts)
+    normal_falloff = (
+        bool(session.previous_normal_falloff)
+        if session.previous_normal_falloff is not None
+        else bool(getattr(image_paint, "use_normal_falloff", True))
+    )
+    clip_starts = [
+        float(previous_clip_starts.get(int(space.as_pointer()), space.clip_start))
+        for space in _studio_view_spaces(window)
+    ]
     workspace[PROJECTION_RECOVERY_KEY] = json.dumps(
         {
             "scene": str(getattr(scene, "name", "")),
             "screen": str(getattr(screen, "name", "")),
-            "normal_falloff": bool(getattr(image_paint, "use_normal_falloff", True)),
-            "clip_starts": [float(space.clip_start) for space in _studio_view_spaces(window)],
+            "normal_falloff": normal_falloff,
+            "clip_starts": clip_starts,
+            "paint_surface": _paint_surface_recovery_record(session),
         },
         separators=(",", ":"),
     )
 
 
-def _clear_projection_recovery(window: Any | None) -> None:
+def _clear_projection_recovery(
+    window: Any | None,
+    session: StudioSession | None = None,
+) -> None:
     workspace = getattr(window, "workspace", None)
+    if workspace is None and session is not None:
+        workspace = bpy.data.workspaces.get(session.workspace_name)
     if workspace is not None and PROJECTION_RECOVERY_KEY in workspace:
         del workspace[PROJECTION_RECOVERY_KEY]
 
@@ -1867,6 +2148,7 @@ def _restore_serialized_projection_settings() -> None:
         serialized = workspace.get(PROJECTION_RECOVERY_KEY)
         if not serialized:
             continue
+        remove_record = False
         try:
             record = json.loads(str(serialized))
             scene = bpy.data.scenes.get(str(record.get("scene", "")))
@@ -1882,13 +2164,18 @@ def _restore_serialized_projection_settings() -> None:
             )
             for space, value in zip(spaces, record.get("clip_starts", ())):
                 space.clip_start = float(value)
-        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
-            pass
+            remove_record = _restore_paint_surface_record(record.get("paint_surface"))
+        except json.JSONDecodeError:
+            # A malformed record cannot be used on a later load either.
+            remove_record = True
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            remove_record = False
         finally:
-            try:
-                del workspace[PROJECTION_RECOVERY_KEY]
-            except (KeyError, ReferenceError, TypeError):
-                pass
+            if remove_record:
+                try:
+                    del workspace[PROJECTION_RECOVERY_KEY]
+                except (KeyError, ReferenceError, TypeError):
+                    pass
 
 
 def _apply_projection_settings(scene: Any, session: StudioSession, window: Any, obj: Any | None) -> None:
@@ -1910,7 +2197,13 @@ def _apply_projection_settings(scene: Any, session: StudioSession, window: Any, 
     session.projection_settings_suspended = False
 
 
-def _restore_projection_settings(scene: Any | None, session: StudioSession, window: Any | None) -> None:
+def _restore_projection_settings(
+    scene: Any | None,
+    session: StudioSession,
+    window: Any | None,
+    *,
+    clear_recovery: bool = True,
+) -> None:
     if scene is not None and session.previous_normal_falloff is not None:
         image_paint = scene.tool_settings.image_paint
         if hasattr(image_paint, "use_normal_falloff"):
@@ -1920,7 +2213,8 @@ def _restore_projection_settings(scene: Any | None, session: StudioSession, wind
         value = previous.get(int(space.as_pointer()))
         if value is not None:
             space.clip_start = value
-    _clear_projection_recovery(window)
+    if clear_recovery:
+        _clear_projection_recovery(window, session)
     session.projection_settings_suspended = True
 
 
@@ -2119,11 +2413,17 @@ def _rollback_pending(error: BaseException | None = None) -> None:
     _discard_project_paint_snapshots(project)
     _cancel_stroke_watchdog()
     _release_project_history(project)
+    surface_restored = _restore_paint_surface_isolation(session, clear=True)
+    scene = bpy.data.scenes.get(session.scene_name)
+    _restore_projection_settings(
+        scene,
+        session,
+        window,
+        clear_recovery=surface_restored,
+    )
     if window is None:
         return
     failed_workspace = bpy.data.workspaces.get(session.workspace_name)
-    scene = bpy.data.scenes.get(session.scene_name)
-    _restore_projection_settings(scene, session, window)
     previous = bpy.data.workspaces.get(session.previous_workspace_name)
     if previous is not None:
         window.workspace = previous
@@ -2203,6 +2503,12 @@ def _continue_enter() -> float | None:
                 )
             else:
                 session.first_hint_text = "Choose an angle · choose Light or Shadow · paint"
+            _apply_paint_surface_isolation(
+                project,
+                session,
+                scene=scene,
+                window=window,
+            )
             _mode_set(context, window, view_area, "TEXTURE_PAINT")
             from .tools import activate_tools
 
@@ -2262,6 +2568,12 @@ def _configure_session_target(
         raise StudioError("Quick SDF Paint needs both a 3D View and an Image Editor")
     _set_active_object(context, obj)
     scene.tool_settings.image_paint.mode = "IMAGE"
+    _apply_paint_surface_isolation(
+        project,
+        session,
+        scene=scene,
+        window=window,
+    )
     if not select_paint_key(
         context,
         project,
@@ -2344,6 +2656,8 @@ def _focus_or_switch_studio(context: Any, project: Any) -> StudioSession:
     try:
         window.workspace = workspace
         _leave_object_mode(context, window, old_obj)
+        if not _restore_paint_surface_isolation(session, clear=True):
+            raise StudioError("The current Quick SDF paint surface could not be restored")
         restore_stroke_brush(session=session)
         _cancel_stroke_watchdog()
         _restore_preview(old_project)
@@ -2388,6 +2702,7 @@ def _focus_or_switch_studio(context: Any, project: Any) -> StudioSession:
             _leave_object_mode(context, window, target_obj)
         except (ReferenceError, RuntimeError, StudioError):
             pass
+        _restore_paint_surface_isolation(session, clear=True)
         for name, value in old_session_state.items():
             setattr(session, name, value)
         workspace[WORKSPACE_PROJECT_TAG] = old_workspace_tag or session.project_uuid
@@ -2605,7 +2920,13 @@ def exit_studio(
     _cancel_stroke_watchdog()
     _release_project_history(project)
     scene = bpy.data.scenes.get(session.scene_name) or getattr(window, "scene", None)
-    _restore_projection_settings(scene, session, window)
+    surface_restored = _restore_paint_surface_isolation(session, clear=True)
+    _restore_projection_settings(
+        scene,
+        session,
+        window,
+        clear_recovery=surface_restored,
+    )
     try:
         from .live_preview import release_project
 
@@ -2691,7 +3012,13 @@ def _save_pre(_unused: Any) -> None:
     restore_stroke_brush(session=_SESSION)
     _discard_project_paint_snapshots(project)
     _cancel_stroke_watchdog()
-    _restore_projection_settings(scene, _SESSION, window)
+    surface_restored = _restore_paint_surface_isolation(_SESSION, clear=False)
+    _restore_projection_settings(
+        scene,
+        _SESSION,
+        window,
+        clear_recovery=surface_restored,
+    )
     if project is not None:
         _SESSION.onion_suspended = bool(project.onion_enabled)
         if _SESSION.onion_suspended:
@@ -2710,47 +3037,89 @@ def _save_post(_unused: Any) -> None:
     if _SESSION is None or not _SESSION.preview_suspended:
         return
     project = resolve_session_project()
+    resume_error: BaseException | None = None
+    try:
+        if project is None:
+            raise StudioError("The Quick SDF project disappeared while resuming after save")
+        _ensure_session_timeline_host(_SESSION)
+        window = find_window(_SESSION.window_pointer)
+        scene = bpy.data.scenes.get(_SESSION.scene_name) or getattr(window, "scene", None)
+        if window is None or scene is None:
+            raise StudioError("The Quick SDF window disappeared while resuming after save")
+        _apply_paint_surface_isolation(
+            project,
+            _SESSION,
+            scene=scene,
+            window=window,
+        )
+        _apply_projection_settings(scene, _SESSION, window, project.target_object)
+        from .runtime import (
+            active_angle,
+            aux_mask_for_uuid,
+            resolve_aux_mask_image,
+            resolve_display_image,
+        )
+
+        if _SESSION.editing_aux_mask_uuid:
+            project.preview_mode = "MASK"
+            aux_item = aux_mask_for_uuid(project, _SESSION.editing_aux_mask_uuid)
+            image = resolve_aux_mask_image(project, aux_item)
+        else:
+            item = active_angle(project)
+            image = resolve_display_image(project, item) if item else None
+        _assign_preview(project, image)
+        if _SESSION.view_mode == "PREVIEW":
+            from .live_preview import update_seek_preview
+
+            update_seek_preview(project, float(_SESSION.seek_angle))
+        if _SESSION.onion_suspended:
+            project.onion_enabled = True
+        if (
+            _SESSION.provisional_rebuild_after_save
+            and _SESSION.provisional_rebuild_angle >= 0.0
+            and not _SESSION.editing_aux_mask_uuid
+        ):
+            angle = float(_SESSION.provisional_rebuild_angle)
+            _SESSION.provisional_rebuild_after_save = False
+            _SESSION.provisional_rebuild_angle = -1.0
+            settle_seek(bpy.context, project, angle)
+    except (
+        AttributeError,
+        ImportError,
+        ReferenceError,
+        RuntimeError,
+        StudioError,
+        TypeError,
+        ValueError,
+    ) as error:
+        resume_error = error
+
+    if resume_error is None:
+        _SESSION.preview_suspended = False
+        _SESSION.onion_suspended = False
+        return
+
     if project is not None:
         try:
-            _ensure_session_timeline_host(_SESSION)
-            window = find_window(_SESSION.window_pointer)
-            scene = bpy.data.scenes.get(_SESSION.scene_name) or getattr(window, "scene", None)
-            if window is not None and scene is not None:
-                _apply_projection_settings(scene, _SESSION, window, project.target_object)
-            from .runtime import (
-                active_angle,
-                aux_mask_for_uuid,
-                resolve_aux_mask_image,
-                resolve_display_image,
+            project.warning_message = (
+                "Quick SDF Paint could not safely resume after saving. "
+                "The Studio session was closed; reopen it to continue."
             )
-
-            if _SESSION.editing_aux_mask_uuid:
-                project.preview_mode = "MASK"
-                aux_item = aux_mask_for_uuid(project, _SESSION.editing_aux_mask_uuid)
-                image = resolve_aux_mask_image(project, aux_item)
-            else:
-                item = active_angle(project)
-                image = resolve_display_image(project, item) if item else None
-            _assign_preview(project, image)
-            if _SESSION.view_mode == "PREVIEW":
-                from .live_preview import update_seek_preview
-
-                update_seek_preview(project, float(_SESSION.seek_angle))
             if _SESSION.onion_suspended:
                 project.onion_enabled = True
-            if (
-                _SESSION.provisional_rebuild_after_save
-                and _SESSION.provisional_rebuild_angle >= 0.0
-                and not _SESSION.editing_aux_mask_uuid
-            ):
-                angle = float(_SESSION.provisional_rebuild_angle)
-                _SESSION.provisional_rebuild_after_save = False
-                _SESSION.provisional_rebuild_angle = -1.0
-                settle_seek(bpy.context, project, angle)
-        except (ImportError, ReferenceError, RuntimeError, ValueError):
+        except (AttributeError, ReferenceError, RuntimeError):
             pass
-    _SESSION.preview_suspended = False
-    _SESSION.onion_suspended = False
+    if not bpy.app.timers.is_registered(_exit_after_failed_save_resume):
+        bpy.app.timers.register(_exit_after_failed_save_resume, first_interval=0.01)
+
+
+def _exit_after_failed_save_resume() -> None:
+    if _SESSION is not None and _SESSION.preview_suspended:
+        try:
+            exit_studio(bpy.context, reason="save-resume-failed")
+        except (AttributeError, ReferenceError, RuntimeError, StudioError):
+            pass
+    return None
 
 
 @persistent
@@ -2779,7 +3148,13 @@ def _load_pre(_unused: Any) -> None:
         restore_stroke_brush(session=_SESSION)
         _discard_project_paint_snapshots(project)
         _cancel_stroke_watchdog()
-        _restore_projection_settings(scene, _SESSION, window)
+        surface_restored = _restore_paint_surface_isolation(_SESSION, clear=True)
+        _restore_projection_settings(
+            scene,
+            _SESSION,
+            window,
+            clear_recovery=surface_restored,
+        )
     try:
         from .preview import restore_all_preview_materials
 
@@ -2810,7 +3185,20 @@ def _load_post(_unused: Any) -> None:
 def _undo_post(_unused: Any) -> None:
     global _SESSION
     if _SESSION is not None and (find_window(_SESSION.window_pointer) is None or resolve_session_project() is None):
-        _SESSION = None
+        session = _SESSION
+        window = find_window(session.window_pointer)
+        scene = bpy.data.scenes.get(session.scene_name) or getattr(window, "scene", None)
+        try:
+            exit_studio(bpy.context, reason="undo-target-lost")
+        except (AttributeError, ReferenceError, RuntimeError, StudioError):
+            surface_restored = _restore_paint_surface_isolation(session, clear=True)
+            _restore_projection_settings(
+                scene,
+                session,
+                window,
+                clear_recovery=surface_restored,
+            )
+            _SESSION = None
     elif _SESSION is not None:
         try:
             reconcile_view_state(bpy.context)
@@ -2837,6 +3225,9 @@ def register_studio() -> None:
     ):
         if handler not in collection:
             collection.append(handler)
+    save_post_fail = getattr(bpy.app.handlers, "save_post_fail", None)
+    if save_post_fail is not None and _save_post not in save_post_fail:
+        save_post_fail.append(_save_post)
     _HANDLERS_REGISTERED = True
 
 
@@ -2847,6 +3238,8 @@ def unregister_studio() -> None:
         bpy.app.timers.unregister(_continue_switch)
     if bpy.app.timers.is_registered(_continue_enter):
         bpy.app.timers.unregister(_continue_enter)
+    if bpy.app.timers.is_registered(_exit_after_failed_save_resume):
+        bpy.app.timers.unregister(_exit_after_failed_save_resume)
     _cancel_provisional_job()
     _cancel_stroke_watchdog()
     _remove_timeline_hosts()
@@ -2866,6 +3259,10 @@ def unregister_studio() -> None:
     ):
         while handler in collection:
             collection.remove(handler)
+    save_post_fail = getattr(bpy.app.handlers, "save_post_fail", None)
+    if save_post_fail is not None:
+        while _save_post in save_post_fail:
+            save_post_fail.remove(_save_post)
     _HANDLERS_REGISTERED = False
 
 

@@ -292,6 +292,9 @@ def run(output_directory: Path) -> None:
     assert hasattr(bpy.types, "QUICKSDF_OT_project_create")
     assert bpy.app.handlers.load_post.count(runtime._load_or_undo_post) == 1
     assert bpy.app.handlers.save_pre.count(runtime._save_project_images) == 1
+    assert bpy.app.handlers.save_pre.count(studio._save_pre) == 1
+    assert bpy.app.handlers.save_post.count(studio._save_post) == 1
+    assert bpy.app.handlers.save_post_fail.count(studio._save_post) == 1
     assert bpy.app.handlers.depsgraph_update_post.count(runtime._depsgraph_base_update) == 1
     assert bpy.app.handlers.frame_change_post.count(runtime._frame_base_update) == 1
 
@@ -1082,6 +1085,9 @@ def run(output_directory: Path) -> None:
     assert not hasattr(bpy.types, "QUICKSDF_OT_project_create")
     assert runtime._load_or_undo_post not in bpy.app.handlers.load_post
     assert runtime._save_project_images not in bpy.app.handlers.save_pre
+    assert studio._save_pre not in bpy.app.handlers.save_pre
+    assert studio._save_post not in bpy.app.handlers.save_post
+    assert studio._save_post not in bpy.app.handlers.save_post_fail
     assert runtime._depsgraph_base_update not in bpy.app.handlers.depsgraph_update_post
     assert runtime._frame_base_update not in bpy.app.handlers.frame_change_post
     _expect_finished(
@@ -1092,6 +1098,9 @@ def run(output_directory: Path) -> None:
     assert hasattr(bpy.types, "QUICKSDF_OT_project_create")
     assert bpy.app.handlers.load_post.count(runtime._load_or_undo_post) == 1
     assert bpy.app.handlers.save_pre.count(runtime._save_project_images) == 1
+    assert bpy.app.handlers.save_pre.count(studio._save_pre) == 1
+    assert bpy.app.handlers.save_post.count(studio._save_post) == 1
+    assert bpy.app.handlers.save_post_fail.count(studio._save_post) == 1
     assert bpy.app.handlers.depsgraph_update_post.count(runtime._depsgraph_base_update) == 1
     assert bpy.app.handlers.frame_change_post.count(runtime._frame_base_update) == 1
     assert len(bpy.context.scene.quick_sdf_projects) == 0

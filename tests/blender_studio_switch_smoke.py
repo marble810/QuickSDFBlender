@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import hashlib
+import json
 import sys
 import traceback
 
@@ -105,6 +106,13 @@ def _assert_project_is_fully_active(project, obj, runtime, studio) -> None:
     assert expected is not None
     assert bpy.context.scene.tool_settings.image_paint.canvas == expected
     assert _studio_image() == expected
+    recovery = json.loads(
+        str(bpy.context.window.workspace.get(studio.PROJECTION_RECOVERY_KEY, ""))
+    )
+    surface = recovery.get("paint_surface")
+    assert isinstance(surface, dict)
+    assert str(surface.get("project_uuid")) == str(project.uuid)
+    assert str(surface.get("object")) == obj.name
 
 
 def _stage_open_from_original_workspace(obj, operator_name: str, wait_phase: str) -> float:

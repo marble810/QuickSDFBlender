@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 import struct
 from typing import Any, Iterable
 import uuid
@@ -20,6 +21,20 @@ from .bitplane import (
     inspect_bitplane_header,
 )
 from .model import DEFAULT_KEY_ANGLES, MAX_KEYS_PER_SIDE, SIDE_LIGHT_KEY_ANGLE
+
+
+_FACE_MATERIAL_WORDS = frozenset(
+    {"face", "skin", "head", "facial", "顔", "肌", "頭"}
+)
+_AUXILIARY_MATERIAL_WORDS = frozenset(
+    {
+        "transparent", "transparency", "alpha", "overlay", "decal", "detail",
+        "eye", "eyes", "iris", "pupil", "lash", "lashes", "eyelash",
+        "brow", "eyebrow", "mouth", "teeth", "tooth", "tongue", "line",
+        "outline", "mask", "makeup", "blush", "hair", "透明", "目", "眼", "瞳",
+        "まつげ", "眉", "口", "歯", "舌", "線",
+    }
+)
 
 
 PROJECT_UUID_KEY = "quick_sdf_project_uuid"
@@ -51,6 +66,95 @@ _GRAY_UPLOAD_CACHE_LIMIT = 2048 * 2048 * 4
 
 def new_uuid() -> str:
     return str(uuid.uuid4())
+
+
+def _material_name_words(name: str) -> tuple[str, frozenset[str]]:
+    separated = re.sub(r"(?<=[0-9a-z])(?=[A-Z])", " ", str(name))
+    normalized = re.sub(
+        r"[^0-9a-zA-Z\u3040-\u30ff\u3400-\u9fff]+",
+        " ",
+        separated.casefold(),
+    ).strip()
+    return normalized, frozenset(part for part in normalized.split() if part)
+
+
+def _material_name_flags(name: str) -> tuple[str, bool, bool]:
+    normalized, words = _material_name_words(name)
+    compact = normalized.replace(" ", "")
+    has_face_word = bool(words & _FACE_MATERIAL_WORDS) or any(
+        word in compact for word in ("顔", "肌", "頭")
+    )
+    auxiliary = bool(words & _AUXILIARY_MATERIAL_WORDS) or any(
+        word in compact
+        for word in ("透明", "目", "眼", "瞳", "まつげ", "眉", "口", "歯", "舌", "線")
+    )
+    return normalized, has_face_word, auxiliary
+
+
+def suggest_material_slot(obj: Any) -> int:
+    """Choose a high-confidence face surface without trusting a stale active slot.
+
+    Avatar files commonly save an expression overlay, eye card, or transparent
+    detail as the active material. Those are valid Blender materials but poor
+    Quick SDF targets. A reasonable active material is preserved; replacement
+    is limited to a clearly named face material or a clearly auxiliary target.
+    """
+
+    slots = tuple(getattr(obj, "material_slots", ()))
+    if not slots:
+        return 0
+    active = max(
+        0,
+        min(int(getattr(obj, "active_material_index", 0)), len(slots) - 1),
+    )
+    if len(slots) == 1:
+        return active
+
+    face_counts = [0] * len(slots)
+    for polygon in getattr(getattr(obj, "data", None), "polygons", ()):
+        index = int(getattr(polygon, "material_index", 0))
+        if 0 <= index < len(face_counts):
+            face_counts[index] += 1
+
+    records: list[tuple[int, bool, bool, bool, bool, bool]] = []
+    for index, slot in enumerate(slots):
+        material = getattr(slot, "material", None)
+        name = str(getattr(material, "name", ""))
+        normalized, has_face_word, auxiliary = _material_name_flags(name)
+        exact_face = normalized in _FACE_MATERIAL_WORDS
+        records.append(
+            (
+                index,
+                bool(face_counts[index]),
+                bool(material),
+                exact_face,
+                has_face_word,
+                auxiliary,
+            )
+        )
+
+    active_record = records[active]
+    active_is_used = active_record[1]
+    active_has_material = active_record[2]
+    active_is_auxiliary = active_record[5]
+    # A used, non-auxiliary active material is explicit artist intent. Keep it,
+    # even if another slot also contains a generic word such as "skin".
+    if active_is_used and active_has_material and not active_is_auxiliary:
+        return active
+
+    candidates = [
+        record
+        for record in records
+        if record[1] and record[2] and record[4] and not record[5]
+    ]
+    exact_candidates = [record for record in candidates if record[3]]
+    if len(exact_candidates) == 1:
+        return int(exact_candidates[0][0])
+    if not exact_candidates and len(candidates) == 1:
+        return int(candidates[0][0])
+    # Ambiguous meshes retain Blender's active slot. The Advanced panel remains
+    # available for an explicit material choice.
+    return active
 
 
 def begin_base_bake(project_uuid: str) -> None:
