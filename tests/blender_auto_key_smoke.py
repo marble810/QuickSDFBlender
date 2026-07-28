@@ -101,8 +101,12 @@ def _paint_one_texel(
     assert canvas is not None
     rgba = runtime.image_rgba8(canvas)
     if coordinate is None:
-        y = (seed * 11 + 7) % rgba.shape[0]
-        x = (seed * 17 + 5) % rgba.shape[1]
+        face_pixels = np.argwhere(runtime.face_region_uv_mask(project))
+        assert face_pixels.size
+        y, x = (
+            int(value)
+            for value in face_pixels[int(seed) % len(face_pixels)]
+        )
     else:
         y, x = coordinate
     value = 0 if int(rgba[y, x, 0]) >= 128 else 255
@@ -264,7 +268,9 @@ def check() -> float | None:
                 image_name_before_soft = canvas_before_soft.name
                 uuid_before_soft = str(session.provisional_uuid)
                 soft_before = runtime.image_gray8(canvas_before_soft)
-                y, x = 7, 5
+                face_pixels = np.argwhere(runtime.face_region_uv_mask(project))
+                assert face_pixels.size
+                y, x = (int(value) for value in face_pixels[len(face_pixels) // 2])
                 soft_initial = int(soft_before[y, x])
                 coverage_before_soft = decode_bitplane(
                     session.provisional_coverage_blob,
