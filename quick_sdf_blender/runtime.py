@@ -5,9 +5,8 @@ from __future__ import annotations
 
 import hashlib
 import math
-import re
 import struct
-from typing import Any, Iterable
+from typing import Any, Iterable, NamedTuple
 import uuid
 
 import bpy
@@ -21,20 +20,6 @@ from .bitplane import (
     inspect_bitplane_header,
 )
 from .model import DEFAULT_KEY_ANGLES, MAX_KEYS_PER_SIDE, SIDE_LIGHT_KEY_ANGLE
-
-
-_FACE_MATERIAL_WORDS = frozenset(
-    {"face", "skin", "head", "facial", "顔", "肌", "頭"}
-)
-_AUXILIARY_MATERIAL_WORDS = frozenset(
-    {
-        "transparent", "transparency", "alpha", "overlay", "decal", "detail",
-        "eye", "eyes", "iris", "pupil", "lash", "lashes", "eyelash",
-        "brow", "eyebrow", "mouth", "teeth", "tooth", "tongue", "line",
-        "outline", "mask", "makeup", "blush", "hair", "透明", "目", "眼", "瞳",
-        "まつげ", "眉", "口", "歯", "舌", "線",
-    }
-)
 
 
 PROJECT_UUID_KEY = "quick_sdf_project_uuid"
@@ -68,94 +53,75 @@ def new_uuid() -> str:
     return str(uuid.uuid4())
 
 
-def _material_name_words(name: str) -> tuple[str, frozenset[str]]:
-    separated = re.sub(r"(?<=[0-9a-z])(?=[A-Z])", " ", str(name))
-    normalized = re.sub(
-        r"[^0-9a-zA-Z\u3040-\u30ff\u3400-\u9fff]+",
-        " ",
-        separated.casefold(),
-    ).strip()
-    return normalized, frozenset(part for part in normalized.split() if part)
-
-
-def _material_name_flags(name: str) -> tuple[str, bool, bool]:
-    normalized, words = _material_name_words(name)
-    compact = normalized.replace(" ", "")
-    has_face_word = bool(words & _FACE_MATERIAL_WORDS) or any(
-        word in compact for word in ("顔", "肌", "頭")
-    )
-    auxiliary = bool(words & _AUXILIARY_MATERIAL_WORDS) or any(
-        word in compact
-        for word in ("透明", "目", "眼", "瞳", "まつげ", "眉", "口", "歯", "舌", "線")
-    )
-    return normalized, has_face_word, auxiliary
-
-
-def suggest_material_slot(obj: Any) -> int:
-    """Choose a high-confidence face surface without trusting a stale active slot.
-
-    Avatar files commonly save an expression overlay, eye card, or transparent
-    detail as the active material. Those are valid Blender materials but poor
-    Quick SDF targets. A reasonable active material is preserved; replacement
-    is limited to a clearly named face material or a clearly auxiliary target.
-    """
+def material_slot_candidates(obj: Any) -> tuple[int, ...]:
+    """Return material slots that own polygons, without semantic name guessing."""
 
     slots = tuple(getattr(obj, "material_slots", ()))
     if not slots:
-        return 0
-    active = max(
-        0,
-        min(int(getattr(obj, "active_material_index", 0)), len(slots) - 1),
-    )
-    if len(slots) == 1:
-        return active
+        return ()
 
     face_counts = [0] * len(slots)
     for polygon in getattr(getattr(obj, "data", None), "polygons", ()):
         index = int(getattr(polygon, "material_index", 0))
         if 0 <= index < len(face_counts):
             face_counts[index] += 1
+    return tuple(
+        index
+        for index, slot in enumerate(slots)
+        if face_counts[index] > 0 and getattr(slot, "material", None) is not None
+    )
 
-    records: list[tuple[int, bool, bool, bool, bool, bool]] = []
-    for index, slot in enumerate(slots):
-        material = getattr(slot, "material", None)
-        name = str(getattr(material, "name", ""))
-        normalized, has_face_word, auxiliary = _material_name_flags(name)
-        exact_face = normalized in _FACE_MATERIAL_WORDS
-        records.append(
-            (
-                index,
-                bool(face_counts[index]),
-                bool(material),
-                exact_face,
-                has_face_word,
-                auxiliary,
-            )
-        )
 
-    active_record = records[active]
-    active_is_used = active_record[1]
-    active_has_material = active_record[2]
-    active_is_auxiliary = active_record[5]
-    # A used, non-auxiliary active material is explicit artist intent. Keep it,
-    # even if another slot also contains a generic word such as "skin".
-    if active_is_used and active_has_material and not active_is_auxiliary:
-        return active
+class MaterialSlotSuggestion(NamedTuple):
+    index: int
+    confidence: str
+    candidates: tuple[int, ...]
+    area_fraction: float
+    dominance: float
 
-    candidates = [
-        record
-        for record in records
-        if record[1] and record[2] and record[4] and not record[5]
-    ]
-    exact_candidates = [record for record in candidates if record[3]]
-    if len(exact_candidates) == 1:
-        return int(exact_candidates[0][0])
-    if not exact_candidates and len(candidates) == 1:
-        return int(candidates[0][0])
-    # Ambiguous meshes retain Blender's active slot. The Advanced panel remains
-    # available for an explicit material choice.
-    return active
 
+def analyze_material_slots(obj: Any) -> MaterialSlotSuggestion:
+    """Rank used surfaces without reading material names.
+
+    Surface area provides a low-friction default for head meshes with small
+    eye/detail shells. Geometry cannot identify semantics in an ambiguous
+    whole-body mesh, so LOW confidence requires an explicit artist choice.
+    """
+
+    slots = tuple(getattr(obj, "material_slots", ()))
+    if not slots:
+        return MaterialSlotSuggestion(0, "SINGLE", (), 1.0, math.inf)
+    active = max(
+        0,
+        min(int(getattr(obj, "active_material_index", 0)), len(slots) - 1),
+    )
+    candidates = material_slot_candidates(obj)
+    if not candidates:
+        return MaterialSlotSuggestion(active, "LOW", (), 0.0, 0.0)
+    if len(candidates) == 1:
+        return MaterialSlotSuggestion(int(candidates[0]), "SINGLE", candidates, 1.0, math.inf)
+
+    areas = [0.0] * len(slots)
+    counts = [0] * len(slots)
+    candidate_set = frozenset(candidates)
+    for polygon in getattr(getattr(obj, "data", None), "polygons", ()):
+        index = int(getattr(polygon, "material_index", 0))
+        if index in candidate_set:
+            counts[index] += 1
+            areas[index] += max(0.0, float(getattr(polygon, "area", 0.0)))
+    use_areas = sum(areas[index] for index in candidates) > 1.0e-12
+    weights = areas if use_areas else counts
+    ranked = sorted(candidates, key=lambda index: (weights[index], -index), reverse=True)
+    largest = int(ranked[0])
+    largest_weight = float(weights[largest])
+    second_weight = float(weights[int(ranked[1])])
+    total_weight = float(sum(weights[index] for index in candidates))
+    fraction = largest_weight / total_weight if total_weight > 0.0 else 0.0
+    dominance = largest_weight / second_weight if second_weight > 0.0 else math.inf
+    if fraction >= 0.70 and dominance >= 3.0:
+        return MaterialSlotSuggestion(largest, "HIGH", candidates, fraction, dominance)
+    default_index = active if active in candidate_set else largest
+    return MaterialSlotSuggestion(default_index, "LOW", candidates, fraction, dominance)
 
 def begin_base_bake(project_uuid: str) -> None:
     _BASE_BAKE_UUIDS.add(str(project_uuid))

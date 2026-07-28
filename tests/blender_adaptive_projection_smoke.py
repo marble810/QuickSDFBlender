@@ -383,7 +383,10 @@ def _run() -> None:
         scene = bpy.context.scene
         scene.quick_sdf_settings.resolution = 512
         scene.quick_sdf_settings.initialization = "WHITE"
-        assert bpy.ops.quicksdf.project_create() == {"FINISHED"}
+        # The three material regions are intentionally comparable in size, so
+        # production UI must ask rather than infer semantics.  The smoke test
+        # explicitly chooses its known central paint target.
+        assert bpy.ops.quicksdf.project_create(material_slot="1") == {"FINISHED"}
         project = runtime.active_project(scene)
         assert project is not None
         project.symmetry_mode = "TEXTURE_MIRROR"

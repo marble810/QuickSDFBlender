@@ -3,8 +3,8 @@
 Unlike array-level Smart Paint tests, this drives Quick SDF's public paint
 macro with ``PAINT_OT_image_paint`` stroke elements in a VIEW_3D region. Two
 overlapping material shells reproduce avatar face overlays: the saved active
-slot is transparent detail, while Quick SDF must select and paint only the
-underlying Face surface.
+slot is the smaller outer detail, while Quick SDF must select and paint only
+the dominant underlying surface without relying on either material name.
 """
 
 from __future__ import annotations
@@ -38,22 +38,31 @@ def _check_material_suggestions(runtime) -> None:
             for name in names
         )
         polygons = tuple(
-            SimpleNamespace(material_index=int(index)) for index in assignments
+            SimpleNamespace(material_index=int(index), area=float(area))
+            for index, area in assignments
         )
         obj = SimpleNamespace(
             material_slots=slots,
             active_material_index=int(active),
             data=SimpleNamespace(polygons=polygons),
         )
-        return runtime.suggest_material_slot(obj)
+        return runtime.analyze_material_slots(obj)
 
-    assert suggestion(("Face", "Face_transparent", "Eye"), 1, (0, 0, 1, 1, 2)) == 0
-    assert suggestion(("Face", "FaceTransparent"), 1, (0, 0, 1, 1)) == 0
-    assert suggestion(("顔", "顔透明"), 1, (0, 0, 1, 1)) == 0
-    assert suggestion(("Skin_Head", "Skin_Body"), 0, (0, 0, 1, 1, 1)) == 0
-    assert suggestion(("Unused Face", "Face_transparent"), 1, (1, 1)) == 1
-    assert suggestion(("Torso", "Eye"), 1, (0, 0, 0, 1)) == 1
-    assert suggestion((None, "Face.001"), 0, (0, 1, 1)) == 1
+    dominant = ((0, 0.123509), (1, 0.022438), (2, 0.001742))
+    result = suggestion(("Surface A", "Surface B", "Surface C"), 1, dominant)
+    assert result.index == 0 and result.confidence == "HIGH"
+    renamed = suggestion(("Anything", "Nothing Semantic", "Third"), 1, dominant)
+    assert renamed.index == result.index and renamed.confidence == result.confidence
+    ambiguous = suggestion(("One", "Two"), 1, ((0, 1.0), (1, 0.9)))
+    assert ambiguous.index == 1 and ambiguous.confidence == "LOW"
+    unused = suggestion(("Unused", "Only Used"), 0, ((1, 1.0), (1, 1.0)))
+    assert unused.index == 1 and unused.confidence == "SINGLE"
+    degenerate = suggestion(
+        ("Dense", "Sparse"),
+        1,
+        ((0, 0.0), (0, 0.0), (0, 0.0), (0, 0.0), (1, 0.0)),
+    )
+    assert degenerate.index == 0 and degenerate.confidence == "HIGH"
 
 
 def _plane() -> bpy.types.Object:
@@ -61,8 +70,8 @@ def _plane() -> bpy.types.Object:
     bpy.ops.object.delete(use_global=False)
     vertices = (
         (-1.0, -1.0, 0.0), (1.0, -1.0, 0.0), (1.0, 1.0, 0.0), (-1.0, 1.0, 0.0),
-        (-1.0, -1.0, 0.01), (1.0, -1.0, 0.01), (1.0, 1.0, 0.01), (-1.0, 1.0, 0.01),
-        (-1.0, -1.0, -0.01), (1.0, -1.0, -0.01), (1.0, 1.0, -0.01), (-1.0, 1.0, -0.01),
+        (-0.5, -0.5, 0.01), (0.5, -0.5, 0.01), (0.5, 0.5, 0.01), (-0.5, 0.5, 0.01),
+        (-0.1, -0.1, -0.01), (0.1, -0.1, -0.01), (0.1, 0.1, -0.01), (-0.1, 0.1, -0.01),
     )
     mesh = bpy.data.meshes.new("Quick SDF Layered Face Mesh")
     mesh.from_pydata(
@@ -86,7 +95,7 @@ def _plane() -> bpy.types.Object:
             uv_layer.data[loop_index].uv = uv
             wrong_uv.data[loop_index].uv = (1.0 - uv[0], uv[1])
     mesh.uv_layers.active = uv_layer
-    for name in ("Face", "Face_transparent"):
+    for name in ("Surface A", "Surface B"):
         material = bpy.data.materials.new(name)
         material.use_nodes = True
         material.node_tree.nodes.clear()
@@ -98,6 +107,34 @@ def _plane() -> bpy.types.Object:
     mesh.polygons[2].select = True
     mesh.polygons[2].hide = True
     return obj
+
+
+def _check_ambiguous_operator(runtime) -> None:
+    bpy.ops.object.select_all(action="SELECT")
+    bpy.ops.object.delete(use_global=False)
+    bpy.ops.mesh.primitive_cube_add(size=1.0)
+    obj = bpy.context.object
+    obj.name = "Quick SDF Ambiguous Surface"
+    for name in ("Material One", "Material Two"):
+        material = bpy.data.materials.new(name)
+        obj.data.materials.append(material)
+    for index, polygon in enumerate(obj.data.polygons):
+        polygon.material_index = index % 2
+    assert runtime.analyze_material_slots(obj).confidence == "LOW"
+    scene = bpy.context.scene
+    scene.quick_sdf_settings.resolution = 512
+    scene.quick_sdf_settings.initialization = "WHITE"
+    try:
+        bpy.ops.quicksdf.project_create()
+    except RuntimeError as error:
+        assert "choose which material" in str(error)
+    else:
+        raise AssertionError("Ambiguous material selection must require an explicit slot")
+    assert len(scene.quick_sdf_projects) == 0
+    assert bpy.ops.quicksdf.project_create(material_slot="1") == {"FINISHED"}
+    project = runtime.active_project(scene)
+    assert project is not None and int(project.material_slot_index) == 1
+    assert bpy.ops.quicksdf.project_remove() == {"FINISHED"}
 
 
 def _assert_preview_graph(obj, project, canvas) -> None:
@@ -385,6 +422,7 @@ def _run() -> None:
         from quick_sdf_blender import runtime
 
         _check_material_suggestions(runtime)
+        _check_ambiguous_operator(runtime)
         obj = _plane()
         scene = bpy.context.scene
         scene.quick_sdf_settings.resolution = 1024

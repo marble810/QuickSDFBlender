@@ -305,19 +305,28 @@ class QSDF_PT_launcher(bpy.types.Panel):
                 return
             info = layout.box()
             info.label(text=obj.name, icon="OUTLINER_OB_MESH")
-            slot_index = runtime.suggest_material_slot(obj)
+            suggestion = runtime.analyze_material_slots(obj)
+            slot_index = int(suggestion.index)
             material = (
                 obj.material_slots[slot_index].material
                 if 0 <= slot_index < len(obj.material_slots)
                 else None
             )
             material_name = material.name if material else "A material will be created"
-            if obj.material_slots and slot_index != int(obj.active_material_index):
-                material_name = f"{material_name} (suggested)"
-            info.label(text=material_name, icon="MATERIAL")
+            if str(suggestion.confidence) == "LOW" and suggestion.candidates:
+                info.label(text="Choose the face surface when creating", icon="MATERIAL")
+            else:
+                info.label(text=f"Surface: {material_name} (Auto)", icon="MATERIAL")
             button = layout.column()
             button.scale_y = 1.7
             button.operator("quicksdf.create_and_edit", text="Create & Edit", icon="BRUSH_DATA")
+            if len(suggestion.candidates) > 1:
+                choose = layout.operator(
+                    "quicksdf.create_and_edit",
+                    text="Choose Another Surface…",
+                    icon="MATERIAL",
+                )
+                choose.choose_material = True
             layout.label(
                 text="Auto-bakes the current pose, then opens Quick SDF Paint.",
                 icon="INFO",
@@ -383,7 +392,17 @@ class QSDF_PT_advanced(bpy.types.Panel):
 
         column = layout.column(align=True)
         column.prop(project, "target_object", text="Object")
-        column.prop(project, "material_slot_index", text="Material Slot")
+        obj = project.target_object
+        slot_index = int(project.material_slot_index)
+        material = (
+            obj.material_slots[slot_index].material
+            if obj is not None and 0 <= slot_index < len(obj.material_slots)
+            else None
+        )
+        column.label(
+            text=f"Surface: {material.name if material else 'Unavailable'}",
+            icon="MATERIAL",
+        )
         column.prop(project, "uv_map_name", text="UV Map")
         column.prop(project, "resolution")
         axes = layout.box()

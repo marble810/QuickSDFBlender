@@ -27,6 +27,7 @@ _HISTORIES: dict[str, History] = {}
 _UNDO_FENCES: set[str] = set()
 _EXPORT_JOB: dict[str, object] | None = None
 _BAKE_JOB: dict[str, object] | None = None
+_MATERIAL_SLOT_ITEM_CACHE: dict[tuple[object, ...], tuple[tuple[str, str, str], ...]] = {}
 
 
 def _side_light_index(angles) -> int:
@@ -618,7 +619,76 @@ def _finish_async_bake(project, job) -> None:
         project.warning_message = f"Base updated; Canvas refresh was deferred: {exc}"
 
 
-def _create_project_data(context, *, sync_ui: bool = True, activate: bool = True):
+def _material_slot_items(_operator, context):
+    obj = getattr(context, "active_object", None)
+    if obj is None or getattr(obj, "type", "") != "MESH":
+        return (("0", "Material", "No active mesh"),)
+    counts = [0] * len(obj.material_slots)
+    for polygon in obj.data.polygons:
+        index = int(polygon.material_index)
+        if 0 <= index < len(counts):
+            counts[index] += 1
+    item_data = []
+    for index in runtime.material_slot_candidates(obj):
+        material = obj.material_slots[index].material
+        name = material.name if material is not None else f"Material Slot {index + 1}"
+        item_data.append(
+            (
+                str(index),
+                name,
+                f"Material Slot {index + 1} · {counts[index]:,} faces",
+            )
+        )
+    items = tuple(item_data) or (("0", "Material", "No material is assigned to used faces"),)
+    # Blender retains pointers to callback strings; keep each signature alive
+    # for the lifetime of the registered module.
+    signature = (int(obj.as_pointer()),) + tuple(items)
+    return _MATERIAL_SLOT_ITEM_CACHE.setdefault(signature, items)
+
+
+def _selected_material_slot(operator, obj) -> int | None:
+    if not obj.material_slots:
+        return None
+    suggestion = runtime.analyze_material_slots(obj)
+    candidates = suggestion.candidates
+    if not candidates:
+        raise ValueError("Assign a material to the face surface first")
+    property_set = bool(operator.properties.is_property_set("material_slot"))
+    if str(suggestion.confidence) == "LOW" and not property_set:
+        raise ValueError(
+            "This mesh uses multiple materials; choose which material contains the face surface"
+        )
+    index = int(operator.material_slot) if property_set else int(suggestion.index)
+    if index not in candidates:
+        raise ValueError("The selected material is not assigned to any faces")
+    return index
+
+
+def _invoke_material_slot_dialog(operator, context, *, force: bool = False):
+    obj = context.active_object
+    suggestion = runtime.analyze_material_slots(obj)
+    if not suggestion.candidates or (
+        str(suggestion.confidence) != "LOW" and not force
+    ):
+        return operator.execute(context)
+    operator.material_slot = str(suggestion.index)
+    return context.window_manager.invoke_props_dialog(operator, width=360)
+
+
+def _draw_material_slot_dialog(operator) -> None:
+    layout = operator.layout
+    layout.label(text="Which material contains the face surface?", icon="MATERIAL")
+    layout.prop(operator, "material_slot", text="Surface")
+    layout.label(text="This is used only to isolate 3D painting.", icon="INFO")
+
+
+def _create_project_data(
+    context,
+    *,
+    sync_ui: bool = True,
+    activate: bool = True,
+    material_slot_index: int | None = None,
+):
     obj = context.active_object
     if obj is None or obj.type != "MESH":
         raise ValueError("Select a mesh object first")
@@ -633,13 +703,25 @@ def _create_project_data(context, *, sync_ui: bool = True, activate: bool = True
     if not obj.material_slots:
         created_material = bpy.data.materials.new(f"{obj.name} Quick SDF")
         obj.data.materials.append(created_material)
+        material_slot_index = 0
+    candidates = runtime.material_slot_candidates(obj)
+    if material_slot_index is None:
+        if len(candidates) > 1:
+            raise ValueError(
+                "This mesh uses multiple materials; choose which material contains the face surface"
+            )
+        if not candidates:
+            raise ValueError("Assign a material to the face surface first")
+        material_slot_index = int(candidates[0])
+    if int(material_slot_index) not in candidates:
+        raise ValueError("The selected material is not assigned to any faces")
     previous_index = int(getattr(context.scene, "quick_sdf_active_project_index", -1))
     project = context.scene.quick_sdf_projects.add()
     created_index = len(context.scene.quick_sdf_projects) - 1
     project.uuid = runtime.new_uuid()
     project.name = f"{obj.name} Face Shadow"
     project.target_object = obj
-    project.material_slot_index = runtime.suggest_material_slot(obj)
+    project.material_slot_index = int(material_slot_index)
     project.uv_map_name = obj.data.uv_layers.active.name
     project.resolution = int(settings.resolution)
     project.authoring_side = "RIGHT"
@@ -701,13 +783,22 @@ class QUICKSDF_OT_project_create(bpy.types.Operator):
     bl_description = "Create nine paint-ready face-shadow keys from the evaluated pose"
     bl_options = {"REGISTER", "UNDO"}
 
+    material_slot: EnumProperty(name="Surface", items=_material_slot_items)
+
     @classmethod
     def poll(cls, context):
         return context.active_object is not None and context.active_object.type == "MESH"
 
+    def invoke(self, context, _event):
+        return _invoke_material_slot_dialog(self, context)
+
+    def draw(self, _context):
+        _draw_material_slot_dialog(self)
+
     def execute(self, context):
         try:
-            _create_project_data(context)
+            material_slot_index = _selected_material_slot(self, context.active_object)
+            _create_project_data(context, material_slot_index=material_slot_index)
         except Exception as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
@@ -804,9 +895,27 @@ class QUICKSDF_OT_create_and_edit(bpy.types.Operator):
         "and open Quick SDF Paint"
     )
 
+    material_slot: EnumProperty(name="Surface", items=_material_slot_items)
+    choose_material: BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})
+
     @classmethod
     def poll(cls, context):
         return context.active_object is not None and context.active_object.type == "MESH"
+
+    def invoke(self, context, _event):
+        _existing_index, project = _project_entry_for_object(
+            context.scene, context.active_object
+        )
+        if project is not None:
+            return self.execute(context)
+        return _invoke_material_slot_dialog(
+            self,
+            context,
+            force=bool(self.choose_material),
+        )
+
+    def draw(self, _context):
+        _draw_material_slot_dialog(self)
 
     def execute(self, context):
         target_object = context.active_object
@@ -817,7 +926,13 @@ class QUICKSDF_OT_create_and_edit(bpy.types.Operator):
             if project is None:
                 # Do not replace the live Studio canvas while the target is
                 # still being created and baked. The switch commits later.
-                project = _create_project_data(context, sync_ui=False, activate=False)
+                material_slot_index = _selected_material_slot(self, target_object)
+                project = _create_project_data(
+                    context,
+                    sync_ui=False,
+                    activate=False,
+                    material_slot_index=material_slot_index,
+                )
             from .studio import open_or_switch_studio
 
             open_or_switch_studio(context, project)
