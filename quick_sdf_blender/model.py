@@ -273,12 +273,38 @@ class QSDFAuxMask(PropertyGroup):
     dirty: BoolProperty(name="Dirty", default=False, options={"HIDDEN"})
 
 
+class QSDFPreviewSlot(PropertyGroup):
+    """Temporary material state for one Face Area material slot."""
+
+    slot_index: IntProperty(name="Slot", default=0, min=0, options={"HIDDEN"})
+    original_material: PointerProperty(
+        name="Original Material", type=bpy.types.Material, options={"HIDDEN"}
+    )
+    original_material_was_none: BoolProperty(
+        name="Original Material Was Empty", default=False, options={"HIDDEN"}
+    )
+    preview_material_name: StringProperty(
+        name="Preview Material Name", default="", options={"HIDDEN"}
+    )
+
+
 class QSDFProject(PropertyGroup):
     uuid: StringProperty(name="UUID", default="")
     name: StringProperty(name="Name", default="Quick SDF")
 
     target_object: PointerProperty(name="Object", type=bpy.types.Object)
-    material_slot_index: IntProperty(name="Material Slot", default=0, min=0)
+    face_region_attribute_name: StringProperty(
+        name="Face Area Attribute", default="", options={"HIDDEN"}
+    )
+    face_region_revision: IntProperty(
+        name="Face Area Revision", default=0, min=0, options={"HIDDEN"}
+    )
+    face_region_face_count: IntProperty(
+        name="Face Area Faces", default=0, min=0, options={"HIDDEN"}
+    )
+    face_region_uv_revision: IntProperty(
+        name="Face Area UV Revision", default=0, min=0, options={"HIDDEN"}
+    )
     uv_map_name: StringProperty(name="UV Map", default="")
     resolution: IntProperty(name="Resolution", default=1024, min=512, max=4096)
     forward_vector: FloatVectorProperty(
@@ -420,10 +446,8 @@ class QSDFProject(PropertyGroup):
     )
 
     # Preview material restoration state survives save/load and can recover
-    # after a Studio session is interrupted.
-    original_material: PointerProperty(name="Original Material", type=bpy.types.Material)
-    preview_material_name: StringProperty(name="Preview Material Name", default="")
-    original_material_was_none: BoolProperty(name="Original Material Was Empty", default=False)
+    # after a Studio session is interrupted. A Face Area may cross slots.
+    preview_slots: CollectionProperty(type=QSDFPreviewSlot)
     material_override_active: BoolProperty(name="Material Override Active", default=False)
 
 
@@ -591,6 +615,7 @@ CLASSES = (
     QSDFAngle,
     QSDFPackingChannel,
     QSDFAuxMask,
+    QSDFPreviewSlot,
     QSDFProject,
     QSDFSettings,
 )

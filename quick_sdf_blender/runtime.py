@@ -6,7 +6,7 @@ from __future__ import annotations
 import hashlib
 import math
 import struct
-from typing import Any, Iterable, NamedTuple
+from typing import Any, Iterable
 import uuid
 
 import bpy
@@ -40,6 +40,8 @@ _BASE_BAKE_UUIDS: set[str] = set()
 _PENDING_BASE_SIGNATURES: set[str] = set()
 BASE_BITPLANE_KEY = "_qsdf_base_bitplane"
 COVERAGE_BITPLANE_KEY = "_qsdf_coverage_bitplane"
+FACE_REGION_UV_BITPLANE_KEY = "_qsdf_face_region_uv"
+FACE_REGION_ATTRIBUTE_PREFIX = ".qsdf_region_"
 _BITPLANE_CACHE = DecodedBitplaneCache()
 _GRAY_CACHE_NAME = ""
 _GRAY_CACHE_IDENTITY = 0
@@ -72,56 +74,167 @@ def material_slot_candidates(obj: Any) -> tuple[int, ...]:
     )
 
 
-class MaterialSlotSuggestion(NamedTuple):
-    index: int
-    confidence: str
-    candidates: tuple[int, ...]
-    area_fraction: float
-    dominance: float
+def _face_region_attribute(project: Any, obj: Any | None = None) -> Any | None:
+    target = obj or getattr(project, "target_object", None)
+    mesh = getattr(target, "data", None)
+    attributes = getattr(mesh, "attributes", None)
+    name = str(getattr(project, "face_region_attribute_name", ""))
+    return attributes.get(name) if attributes is not None and name else None
 
 
-def analyze_material_slots(obj: Any) -> MaterialSlotSuggestion:
-    """Rank used surfaces without reading material names.
+def create_face_region_attribute(project: Any, obj: Any, face_mask: Any) -> Any:
+    """Persist the artist-selected Face Area as a BOOLEAN/FACE attribute."""
 
-    Surface area provides a low-friction default for head meshes with small
-    eye/detail shells. Geometry cannot identify semantics in an ambiguous
-    whole-body mesh, so LOW confidence requires an explicit artist choice.
-    """
+    import numpy as np
 
-    slots = tuple(getattr(obj, "material_slots", ()))
-    if not slots:
-        return MaterialSlotSuggestion(0, "SINGLE", (), 1.0, math.inf)
-    active = max(
-        0,
-        min(int(getattr(obj, "active_material_index", 0)), len(slots) - 1),
+    if obj is None or getattr(obj, "type", "") != "MESH":
+        raise ValueError("The Face Area target must be a mesh")
+    values = np.ascontiguousarray(face_mask, dtype=np.bool_).reshape(-1)
+    if values.size != len(obj.data.polygons):
+        raise ValueError("The Face Area does not match the mesh topology")
+    if not np.any(values):
+        raise ValueError("Select at least one face for the Face Area")
+    name = f"{FACE_REGION_ATTRIBUTE_PREFIX}{str(project.uuid).replace('-', '')}"
+    existing = obj.data.attributes.get(name)
+    if existing is not None:
+        obj.data.attributes.remove(existing)
+    attribute = obj.data.attributes.new(name=name, type="BOOLEAN", domain="FACE")
+    attribute.data.foreach_set("value", values)
+    project.face_region_attribute_name = name
+    project.face_region_revision = int(getattr(project, "face_region_revision", 0)) + 1
+    project.face_region_face_count = int(np.count_nonzero(values))
+    obj.data.update()
+    return attribute
+
+
+def remove_face_region_attribute(project: Any) -> bool:
+    obj = getattr(project, "target_object", None)
+    attribute = _face_region_attribute(project, obj)
+    removed = bool(attribute is not None and obj is not None)
+    if removed:
+        obj.data.attributes.remove(attribute)
+        obj.data.update()
+    if FACE_REGION_UV_BITPLANE_KEY in project:
+        del project[FACE_REGION_UV_BITPLANE_KEY]
+    project.face_region_attribute_name = ""
+    project.face_region_face_count = 0
+    project.face_region_revision = int(getattr(project, "face_region_revision", 0)) + 1
+    project.face_region_uv_revision = int(
+        getattr(project, "face_region_uv_revision", 0)
+    ) + 1
+    _BITPLANE_CACHE.invalidate(f"{getattr(project, 'uuid', '')}:FACE_REGION_UV")
+    return removed
+
+
+def face_region_mask(project: Any, obj: Any | None = None) -> Any:
+    """Return the source-mesh Face Area as a read-only boolean vector."""
+
+    import numpy as np
+
+    target = obj or getattr(project, "target_object", None)
+    if target is None or getattr(target, "type", "") != "MESH":
+        raise ValueError("The Face Area target mesh is unavailable")
+    attribute = _face_region_attribute(project, target)
+    if attribute is None or str(getattr(attribute, "domain", "")) != "FACE" or str(
+        getattr(attribute, "data_type", "")
+    ) != "BOOLEAN":
+        raise ValueError("The Face Area is missing; recreate the Quick SDF project")
+    if len(attribute.data) != len(target.data.polygons):
+        raise ValueError("The Face Area no longer matches the mesh topology")
+    values = np.empty(len(attribute.data), dtype=np.bool_)
+    attribute.data.foreach_get("value", values)
+    values.setflags(write=False)
+    return values
+
+
+def face_region_material_slots(project: Any) -> tuple[int, ...]:
+    obj = getattr(project, "target_object", None)
+    mask = face_region_mask(project, obj)
+    slots = sorted(
+        {
+            int(polygon.material_index)
+            for index, polygon in enumerate(obj.data.polygons)
+            if bool(mask[index])
+        }
     )
-    candidates = material_slot_candidates(obj)
-    if not candidates:
-        return MaterialSlotSuggestion(active, "LOW", (), 0.0, 0.0)
-    if len(candidates) == 1:
-        return MaterialSlotSuggestion(int(candidates[0]), "SINGLE", candidates, 1.0, math.inf)
+    if not slots:
+        raise ValueError("The Face Area is empty")
+    if any(index < 0 or index >= len(obj.material_slots) for index in slots):
+        raise ValueError("A Face Area material slot is unavailable")
+    return tuple(slots)
 
-    areas = [0.0] * len(slots)
-    counts = [0] * len(slots)
-    candidate_set = frozenset(candidates)
-    for polygon in getattr(getattr(obj, "data", None), "polygons", ()):
-        index = int(getattr(polygon, "material_index", 0))
-        if index in candidate_set:
-            counts[index] += 1
-            areas[index] += max(0.0, float(getattr(polygon, "area", 0.0)))
-    use_areas = sum(areas[index] for index in candidates) > 1.0e-12
-    weights = areas if use_areas else counts
-    ranked = sorted(candidates, key=lambda index: (weights[index], -index), reverse=True)
-    largest = int(ranked[0])
-    largest_weight = float(weights[largest])
-    second_weight = float(weights[int(ranked[1])])
-    total_weight = float(sum(weights[index] for index in candidates))
-    fraction = largest_weight / total_weight if total_weight > 0.0 else 0.0
-    dominance = largest_weight / second_weight if second_weight > 0.0 else math.inf
-    if fraction >= 0.70 and dominance >= 3.0:
-        return MaterialSlotSuggestion(largest, "HIGH", candidates, fraction, dominance)
-    default_index = active if active in candidate_set else largest
-    return MaterialSlotSuggestion(default_index, "LOW", candidates, fraction, dominance)
+
+def selected_edit_face_mask(obj: Any) -> Any | None:
+    """Return an explicit Edit Mode face selection, or ``None`` outside Edit Mode."""
+
+    if obj is None or getattr(obj, "type", "") != "MESH" or getattr(obj, "mode", "") != "EDIT":
+        return None
+    import bmesh
+    import numpy as np
+
+    mesh = obj.data
+    edit_mesh = bmesh.from_edit_mesh(mesh)
+    edit_mesh.faces.ensure_lookup_table()
+    values = np.zeros(len(mesh.polygons), dtype=np.bool_)
+    for face in edit_mesh.faces:
+        if face.select and not face.hide and 0 <= int(face.index) < values.size:
+            values[int(face.index)] = True
+    return values
+
+
+def face_region_revision_token(project: Any) -> tuple[Any, ...]:
+    import numpy as np
+
+    mask = face_region_mask(project)
+    packed = np.packbits(mask, bitorder="little")
+    checksum = hashlib.sha1(packed.tobytes(order="C")).hexdigest()
+    return (
+        str(getattr(project, "face_region_attribute_name", "")),
+        int(getattr(project, "face_region_revision", 0)),
+        int(mask.size),
+        int(np.count_nonzero(mask)),
+        checksum,
+    )
+
+
+def set_face_region_uv_mask(project: Any, plane: Any) -> bool:
+    import numpy as np
+
+    values = np.ascontiguousarray(plane, dtype=np.bool_)
+    expected = (int(project.resolution), int(project.resolution))
+    if values.shape != expected:
+        raise ValueError(f"Face Area UV shape {values.shape} does not match {expected}")
+    try:
+        if np.array_equal(face_region_uv_mask(project), values):
+            return False
+    except (BitplaneError, ValueError):
+        pass
+    if FACE_REGION_UV_BITPLANE_KEY in project:
+        del project[FACE_REGION_UV_BITPLANE_KEY]
+    project[FACE_REGION_UV_BITPLANE_KEY] = encode_bitplane(
+        values, BitplaneRole.FACE_REGION_UV
+    )
+    project.face_region_uv_revision = int(
+        getattr(project, "face_region_uv_revision", 0)
+    ) + 1
+    _BITPLANE_CACHE.invalidate(f"{getattr(project, 'uuid', '')}:FACE_REGION_UV")
+    return True
+
+
+def face_region_uv_mask(project: Any) -> Any:
+    blob = project.get(FACE_REGION_UV_BITPLANE_KEY)
+    if not isinstance(blob, bytes):
+        raise BitplaneError("Missing Face Area UV bitplane")
+    values = _BITPLANE_CACHE.decode(
+        f"{getattr(project, 'uuid', '')}:FACE_REGION_UV",
+        int(getattr(project, "face_region_uv_revision", 0)),
+        blob,
+        expected_role=BitplaneRole.FACE_REGION_UV,
+    )
+    expected = (int(project.resolution), int(project.resolution))
+    if values.shape != expected:
+        raise BitplaneError(f"Face Area UV shape {values.shape} does not match {expected}")
+    return values
 
 def begin_base_bake(project_uuid: str) -> None:
     _BASE_BAKE_UUIDS.add(str(project_uuid))
@@ -143,6 +256,10 @@ def compute_base_signature(project: Any, scene: bpy.types.Scene | None = None) -
     digest.update(struct.pack("<q", int(getattr(scene, "frame_current", 0))))
     mesh = obj.data
     digest.update(struct.pack("<qqq", len(mesh.vertices), len(mesh.edges), len(mesh.polygons)))
+    try:
+        digest.update(repr(face_region_revision_token(project)).encode("utf-8"))
+    except (BitplaneError, ValueError):
+        return ""
     if mesh.vertices:
         import numpy as np
 
@@ -251,11 +368,11 @@ def resolve_display_image(project: Any, angle_item: Any) -> bpy.types.Image | No
 
 
 def _bitplane_spec(role: BitplaneRole) -> tuple[str, str]:
-    return (
-        (BASE_BITPLANE_KEY, "base_revision")
-        if role is BitplaneRole.BASE
-        else (COVERAGE_BITPLANE_KEY, "coverage_revision")
-    )
+    if role is BitplaneRole.BASE:
+        return BASE_BITPLANE_KEY, "base_revision"
+    if role is BitplaneRole.COVERAGE:
+        return COVERAGE_BITPLANE_KEY, "coverage_revision"
+    raise ValueError(f"{role.name} is not stored on an angle key")
 
 
 def bitplane_blob(angle_item: Any, role: BitplaneRole | str) -> bytes:
@@ -1510,16 +1627,19 @@ def validate_project(project: Any) -> tuple[list[str], list[str]]:
     else:
         if obj.library is not None or obj.data.library is not None:
             errors.append("Linked objects and mesh data are read-only; make a local copy.")
-        if not (0 <= int(project.material_slot_index) < len(obj.material_slots)):
-            errors.append("Material slot is unavailable.")
+        try:
+            region = face_region_mask(project, obj)
+        except (ValueError, BitplaneError) as exc:
+            region = None
+            errors.append(str(exc))
         uv_layer = obj.data.uv_layers.get(project.uv_map_name)
         if uv_layer is None:
             errors.append("UV map is unavailable.")
-        else:
+        elif region is not None:
             target_loops = (
                 loop_index
-                for polygon in obj.data.polygons
-                if polygon.material_index == int(project.material_slot_index)
+                for polygon_index, polygon in enumerate(obj.data.polygons)
+                if bool(region[polygon_index])
                 for loop_index in polygon.loop_indices
             )
             outside = any(
@@ -1531,10 +1651,14 @@ def validate_project(project: Any) -> tuple[list[str], list[str]]:
             )
             if outside:
                 errors.append("UV coordinates must stay in the 0-1 tile.")
-        if obj.data.polygons and not any(
-            polygon.material_index == int(project.material_slot_index) for polygon in obj.data.polygons
-        ):
-            errors.append("No faces use the selected material slot.")
+        if region is not None and not any(region):
+            errors.append("Face Area must contain at least one polygon.")
+        if region is not None and int(region.sum()) != int(project.face_region_face_count):
+            errors.append("Face Area changed; recreate the Quick SDF project.")
+        try:
+            face_region_uv_mask(project)
+        except (BitplaneError, ValueError):
+            errors.append("Missing or corrupt Face Area UV mask.")
         modifiers = [modifier.name for modifier in obj.modifiers if modifier.show_viewport and modifier.type in _TOPOLOGY_MODIFIERS]
         if modifiers:
             warnings.append("Topology-changing modifiers are active: " + ", ".join(modifiers))

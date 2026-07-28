@@ -99,9 +99,8 @@ def run(blend_path: Path, fingerprints_path: Path | None = None) -> None:
         assert project.export_adjustment_pixel_count == 0
         obj = project.target_object
         assert obj is not None
-        slot = int(project.material_slot_index)
-        assert 0 <= slot < len(obj.material_slots)
-        assert obj.material_slots[slot].material == project.original_material
+        assert len(project.preview_slots) == 0
+        assert runtime.face_region_mask(project).any()
 
     if fingerprints_path is not None:
         expected = _freeze_json(

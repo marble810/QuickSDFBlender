@@ -2,9 +2,9 @@
 
 Unlike array-level Smart Paint tests, this drives Quick SDF's public paint
 macro with ``PAINT_OT_image_paint`` stroke elements in a VIEW_3D region. Two
-overlapping material shells reproduce avatar face overlays: the saved active
-slot is the smaller outer detail, while Quick SDF must select and paint only
-the dominant underlying surface without relying on either material name.
+overlapping material shells reproduce avatar face overlays. Quick SDF must
+paint only the artist-selected Face Area without inferring intent from names,
+surface area, or the active material.
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ import shutil
 import sys
 import time
 import traceback
-from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,40 +28,6 @@ RESULT_PATH = ROOT / "build" / "projection_paint_smoke_result.txt"
 ACTIVE_SAVE_PATH = ROOT / "build" / "projection_paint_active_save.blend"
 ACTIVE_SAVE_COPY_PATH = ROOT / "build" / "projection_paint_active_save_copy.blend"
 STATE: dict[str, object] = {"waits": 0, "phase": "OPENING"}
-
-
-def _check_material_suggestions(runtime) -> None:
-    def suggestion(names, active, assignments):
-        slots = tuple(
-            SimpleNamespace(material=SimpleNamespace(name=name) if name else None)
-            for name in names
-        )
-        polygons = tuple(
-            SimpleNamespace(material_index=int(index), area=float(area))
-            for index, area in assignments
-        )
-        obj = SimpleNamespace(
-            material_slots=slots,
-            active_material_index=int(active),
-            data=SimpleNamespace(polygons=polygons),
-        )
-        return runtime.analyze_material_slots(obj)
-
-    dominant = ((0, 0.123509), (1, 0.022438), (2, 0.001742))
-    result = suggestion(("Surface A", "Surface B", "Surface C"), 1, dominant)
-    assert result.index == 0 and result.confidence == "HIGH"
-    renamed = suggestion(("Anything", "Nothing Semantic", "Third"), 1, dominant)
-    assert renamed.index == result.index and renamed.confidence == result.confidence
-    ambiguous = suggestion(("One", "Two"), 1, ((0, 1.0), (1, 0.9)))
-    assert ambiguous.index == 1 and ambiguous.confidence == "LOW"
-    unused = suggestion(("Unused", "Only Used"), 0, ((1, 1.0), (1, 1.0)))
-    assert unused.index == 1 and unused.confidence == "SINGLE"
-    degenerate = suggestion(
-        ("Dense", "Sparse"),
-        1,
-        ((0, 0.0), (0, 0.0), (0, 0.0), (0, 0.0), (1, 0.0)),
-    )
-    assert degenerate.index == 0 and degenerate.confidence == "HIGH"
 
 
 def _plane() -> bpy.types.Object:
@@ -120,29 +85,227 @@ def _check_ambiguous_operator(runtime) -> None:
         obj.data.materials.append(material)
     for index, polygon in enumerate(obj.data.polygons):
         polygon.material_index = index % 2
-    assert runtime.analyze_material_slots(obj).confidence == "LOW"
+    assert runtime.material_slot_candidates(obj) == (0, 1)
     scene = bpy.context.scene
     scene.quick_sdf_settings.resolution = 512
     scene.quick_sdf_settings.initialization = "WHITE"
     try:
         bpy.ops.quicksdf.project_create()
     except RuntimeError as error:
-        assert "choose which material" in str(error)
+        assert "select Face Area polygons" in str(error)
     else:
         raise AssertionError("Ambiguous material selection must require an explicit slot")
     assert len(scene.quick_sdf_projects) == 0
     assert bpy.ops.quicksdf.project_create(material_slot="1") == {"FINISHED"}
     project = runtime.active_project(scene)
-    assert project is not None and int(project.material_slot_index) == 1
+    assert project is not None
+    assert runtime.face_region_material_slots(project) == (1,)
+    region = runtime.face_region_mask(project)
+    assert all(bool(region[index]) == (polygon.material_index == 1) for index, polygon in enumerate(obj.data.polygons))
+    assert bpy.ops.quicksdf.project_remove() == {"FINISHED"}
+
+
+def _check_explicit_face_area(runtime) -> None:
+    import bmesh
+
+    bpy.ops.object.select_all(action="SELECT")
+    bpy.ops.object.delete(use_global=False)
+    mesh = bpy.data.meshes.new("Quick SDF Shared Body Mesh")
+    mesh.from_pydata(
+        ((-1.0, 0.0, 1.0), (0.0, 0.0, 1.0), (1.0, 0.0, 1.0),
+         (-1.0, 0.0, 0.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+        (),
+        ((0, 1, 4, 3), (1, 2, 5, 4)),
+    )
+    obj = bpy.data.objects.new("Quick SDF Shared Face And Body", mesh)
+    bpy.context.collection.objects.link(obj)
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    material = bpy.data.materials.new("One Shared Material")
+    mesh.materials.append(material)
+    uv_layer = mesh.uv_layers.new(name="FaceBodyUV")
+    for polygon_index, polygon in enumerate(mesh.polygons):
+        u0, u1 = ((0.05, 0.45) if polygon_index == 0 else (0.55, 0.95))
+        coordinates = ((u0, 0.05), (u1, 0.05), (u1, 0.95), (u0, 0.95))
+        for loop_index, uv in zip(polygon.loop_indices, coordinates, strict=True):
+            uv_layer.data[loop_index].uv = uv
+    modifier = obj.modifiers.new("Subdivision carries Face Area", "SUBSURF")
+    modifier.levels = 1
+    bpy.ops.object.mode_set(mode="EDIT")
+    edit_mesh = bmesh.from_edit_mesh(mesh)
+    edit_mesh.faces.ensure_lookup_table()
+    for face in edit_mesh.faces:
+        face.select = face.index == 0
+    bmesh.update_edit_mesh(mesh)
+    scene = bpy.context.scene
+    scene.quick_sdf_settings.resolution = 512
+    scene.quick_sdf_settings.initialization = "NORMAL_GUIDE"
+    assert bpy.ops.quicksdf.project_create() == {"FINISHED"}
+    project = runtime.active_project(scene)
+    assert project is not None
+    bpy.ops.object.mode_set(mode="OBJECT")
+    np.testing.assert_array_equal(runtime.face_region_mask(project), (True, False))
+    assert runtime.face_region_material_slots(project) == (0,)
+    uv_mask = runtime.face_region_uv_mask(project)
+    assert bool(uv_mask[256, 128])
+    assert not bool(uv_mask[256, 384])
+    attribute_name = str(project.face_region_attribute_name)
+    assert mesh.attributes.get(attribute_name) is not None
+    assert bpy.ops.quicksdf.project_remove() == {"FINISHED"}
+    assert mesh.attributes.get(attribute_name) is None
+
+
+def _check_overlapping_shared_material_face_area_rejected(runtime) -> None:
+    """A texture cannot isolate selected faces from overlapping body UVs."""
+
+    import bmesh
+
+    if bpy.context.object is not None and bpy.context.object.mode != "OBJECT":
+        bpy.ops.object.mode_set(mode="OBJECT")
+    bpy.ops.object.select_all(action="SELECT")
+    bpy.ops.object.delete(use_global=False)
+    mesh = bpy.data.meshes.new("Quick SDF Overlapping Shared Material Mesh")
+    mesh.from_pydata(
+        (
+            (-1.0, 0.0, 1.0),
+            (0.0, 0.0, 1.0),
+            (1.0, 0.0, 1.0),
+            (-1.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+        ),
+        (),
+        ((0, 1, 4, 3), (1, 2, 5, 4)),
+    )
+    obj = bpy.data.objects.new("Quick SDF Overlapping Face And Body", mesh)
+    bpy.context.collection.objects.link(obj)
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    material = bpy.data.materials.new("Quick SDF Shared Face Body Material")
+    material.use_nodes = True
+    mesh.materials.append(material)
+    uv_layer = mesh.uv_layers.new(name="OverlappingFaceBodyUV")
+    coordinates = ((0.1, 0.1), (0.9, 0.1), (0.9, 0.9), (0.1, 0.9))
+    for polygon in mesh.polygons:
+        for loop_index, uv in zip(polygon.loop_indices, coordinates, strict=True):
+            uv_layer.data[loop_index].uv = uv
+
+    bpy.ops.object.mode_set(mode="EDIT")
+    edit_mesh = bmesh.from_edit_mesh(mesh)
+    edit_mesh.faces.ensure_lookup_table()
+    for face in edit_mesh.faces:
+        face.select = face.index == 0
+    bmesh.update_edit_mesh(mesh)
+    scene = bpy.context.scene
+    scene.quick_sdf_settings.resolution = 512
+    scene.quick_sdf_settings.initialization = "WHITE"
+    try:
+        result = bpy.ops.quicksdf.project_create()
+    except RuntimeError as error:
+        assert "overlaps body UVs" in str(error)
+    else:
+        assert result == {"CANCELLED"}, result
+
+    assert len(scene.quick_sdf_projects) == 0
+    assert runtime.active_project(scene) is None
+    assert not any(
+        str(attribute.name).startswith(".qsdf_region_")
+        for attribute in mesh.attributes
+    ), "Failed project creation leaked its persistent Face Area attribute"
+    assert obj.mode == "EDIT"
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+
+def _check_multi_material_face_area_preview(runtime) -> None:
+    """An explicit Face Area may span slots and preview must restore all of them."""
+
+    import bmesh
+    from quick_sdf_blender import preview
+
+    if bpy.context.object is not None and bpy.context.object.mode != "OBJECT":
+        bpy.ops.object.mode_set(mode="OBJECT")
+    bpy.ops.object.select_all(action="SELECT")
+    bpy.ops.object.delete(use_global=False)
+    mesh = bpy.data.meshes.new("Quick SDF Multi Material Face Area Mesh")
+    mesh.from_pydata(
+        (
+            (-1.0, 0.0, 1.0),
+            (0.0, 0.0, 1.0),
+            (1.0, 0.0, 1.0),
+            (-1.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+        ),
+        (),
+        ((0, 1, 4, 3), (1, 2, 5, 4)),
+    )
+    mesh.polygons[0].material_index = 0
+    mesh.polygons[1].material_index = 1
+    obj = bpy.data.objects.new("Quick SDF Two Slot Face Area", mesh)
+    bpy.context.collection.objects.link(obj)
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    originals = []
+    for name in ("Quick SDF Face Skin", "Quick SDF Face Detail"):
+        material = bpy.data.materials.new(name)
+        material.use_nodes = True
+        mesh.materials.append(material)
+        originals.append(material)
+    uv_layer = mesh.uv_layers.new(name="MultiSlotFaceUV")
+    for polygon_index, polygon in enumerate(mesh.polygons):
+        u0, u1 = ((0.05, 0.45) if polygon_index == 0 else (0.55, 0.95))
+        coordinates = ((u0, 0.05), (u1, 0.05), (u1, 0.95), (u0, 0.95))
+        for loop_index, uv in zip(polygon.loop_indices, coordinates, strict=True):
+            uv_layer.data[loop_index].uv = uv
+
+    bpy.ops.object.mode_set(mode="EDIT")
+    edit_mesh = bmesh.from_edit_mesh(mesh)
+    for face in edit_mesh.faces:
+        face.select = True
+    bmesh.update_edit_mesh(mesh)
+    scene = bpy.context.scene
+    scene.quick_sdf_settings.resolution = 512
+    scene.quick_sdf_settings.initialization = "WHITE"
+    assert bpy.ops.quicksdf.project_create() == {"FINISHED"}
+    project = runtime.active_project(scene)
+    assert project is not None
+    bpy.ops.object.mode_set(mode="OBJECT")
+    assert runtime.face_region_material_slots(project) == (0, 1)
+    np.testing.assert_array_equal(runtime.face_region_mask(project), (True, True))
+
+    original_links = tuple(slot.link for slot in obj.material_slots)
+    canvas = runtime.resolve_display_image(project, runtime.active_angle(project))
+    assert canvas is not None
+    preview.assign_preview_material(project, canvas)
+    assert bool(project.material_override_active)
+    assert tuple(int(state.slot_index) for state in project.preview_slots) == (0, 1)
+    for index, original in enumerate(originals):
+        assigned = obj.material_slots[index].material
+        assert assigned is not None and assigned != original
+        state = next(
+            item for item in project.preview_slots if int(item.slot_index) == index
+        )
+        assert assigned == bpy.data.materials.get(str(state.preview_material_name))
+        assert state.original_material == original
+
+    assert preview.restore_preview_materials(project) == 2
+    assert not bool(project.material_override_active)
+    assert len(project.preview_slots) == 0
+    for index, original in enumerate(originals):
+        assert obj.material_slots[index].material == original
+        assert obj.material_slots[index].link == original_links[index]
     assert bpy.ops.quicksdf.project_remove() == {"FINISHED"}
 
 
 def _assert_preview_graph(obj, project, canvas) -> None:
-    material = obj.material_slots[int(project.material_slot_index)].material
-    stored = bpy.data.materials.get(str(project.preview_material_name))
+    state = next(item for item in project.preview_slots if int(item.slot_index) == 0)
+    material = obj.material_slots[0].material
+    stored = bpy.data.materials.get(str(state.preview_material_name))
     assert material is not None and material == stored
-    assert material != project.original_material
+    assert material != state.original_material
     nodes = material.node_tree.nodes
+    assert nodes.get("QSDF Face Area") is not None
+    assert nodes.get("QSDF Face Area Strength") is not None
     mix = nodes.get("QSDF Original Overlay")
     group = nodes.get("QSDF Preview")
     texture = nodes.get("QSDF Mask")
@@ -421,15 +584,18 @@ def _run() -> None:
         }
         from quick_sdf_blender import runtime
 
-        _check_material_suggestions(runtime)
         _check_ambiguous_operator(runtime)
+        _check_explicit_face_area(runtime)
+        _check_overlapping_shared_material_face_area_rejected(runtime)
+        _check_multi_material_face_area_preview(runtime)
         obj = _plane()
         scene = bpy.context.scene
         scene.quick_sdf_settings.resolution = 1024
         scene.quick_sdf_settings.initialization = "WHITE"
-        assert bpy.ops.quicksdf.project_create() == {"FINISHED"}
+        assert bpy.ops.quicksdf.project_create(material_slot="0") == {"FINISHED"}
         project = runtime.active_project(scene)
-        assert project is not None and int(project.material_slot_index) == 0
+        assert project is not None
+        assert runtime.face_region_material_slots(project) == (0,)
         assert str(project.uv_map_name) == "PaintUV"
         obj.data.uv_layers.active = obj.data.uv_layers["WrongUV"]
         assert bpy.ops.quicksdf.studio_enter() == {"FINISHED"}

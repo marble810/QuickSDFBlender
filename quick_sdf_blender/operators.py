@@ -154,7 +154,17 @@ def _extract_evaluated_bake_input(context, project):
         triangle_polygons = np.empty(triangle_count, dtype=np.int32)
         triangle_loops = np.empty(triangle_count * 3, dtype=np.int32)
         triangle_vertices = np.empty(triangle_count * 3, dtype=np.int32)
-        polygon_materials = np.empty(polygon_count, dtype=np.int32)
+        region_attribute = mesh.attributes.get(str(project.face_region_attribute_name))
+        if (
+            region_attribute is None
+            or str(region_attribute.domain) != "FACE"
+            or str(region_attribute.data_type) != "BOOLEAN"
+            or len(region_attribute.data) != polygon_count
+        ):
+            raise ValueError(
+                "The Face Area did not survive mesh evaluation; apply or disable the modifier"
+            )
+        polygon_region = np.empty(polygon_count, dtype=np.bool_)
         uv_values = np.empty(loop_count * 2, dtype=np.float32)
         normal_values = np.empty(loop_count * 3, dtype=np.float32)
         vertex_values = np.empty(vertex_count * 3, dtype=np.float32)
@@ -162,7 +172,7 @@ def _extract_evaluated_bake_input(context, project):
             mesh.loop_triangles.foreach_get("polygon_index", triangle_polygons)
             mesh.loop_triangles.foreach_get("loops", triangle_loops)
             mesh.loop_triangles.foreach_get("vertices", triangle_vertices)
-            mesh.polygons.foreach_get("material_index", polygon_materials)
+            region_attribute.data.foreach_get("value", polygon_region)
             uv_layer.data.foreach_get("uv", uv_values)
             mesh.corner_normals.foreach_get("vector", normal_values)
             mesh.vertices.foreach_get("co", vertex_values)
@@ -172,7 +182,7 @@ def _extract_evaluated_bake_input(context, project):
             triangle_polygons[:] = [item.polygon_index for item in mesh.loop_triangles]
             triangle_loops[:] = [value for item in mesh.loop_triangles for value in item.loops]
             triangle_vertices[:] = [value for item in mesh.loop_triangles for value in item.vertices]
-            polygon_materials[:] = [item.material_index for item in mesh.polygons]
+            polygon_region[:] = [bool(item.value) for item in region_attribute.data]
             uv_values[:] = [value for item in uv_layer.data for value in tuple(item.uv)]
             normal_values[:] = [
                 value
@@ -182,9 +192,9 @@ def _extract_evaluated_bake_input(context, project):
             vertex_values[:] = [value for item in mesh.vertices for value in tuple(item.co)]
         triangle_loops = triangle_loops.reshape(-1, 3)
         triangle_vertices = triangle_vertices.reshape(-1, 3)
-        selected = polygon_materials[triangle_polygons] == int(project.material_slot_index)
+        selected = polygon_region[triangle_polygons]
         if not np.any(selected):
-            raise ValueError("No evaluated faces use the selected material slot")
+            raise ValueError("The evaluated Face Area is empty")
         selected_loops = triangle_loops[selected]
         selected_vertices = triangle_vertices[selected]
         uv_values = uv_values.reshape(-1, 2)
@@ -231,12 +241,13 @@ def _write_sdf_area_occupancy(project, occupancy, *, force: bool = False) -> boo
     image = runtime.resolve_aux_mask_image(project, item)
     if item is None or image is None:
         raise ValueError("The SDF Area mask is missing")
-    if bool(image.get(runtime.AUX_MASK_INITIALIZED_KEY, False)) and not force:
-        return False
     mask = np.asarray(occupancy, dtype=np.bool_)
     expected = (int(project.resolution), int(project.resolution))
     if mask.shape != expected:
         raise ValueError(f"SDF Area shape {mask.shape} does not match {expected}")
+    runtime.set_face_region_uv_mask(project, mask)
+    if bool(image.get(runtime.AUX_MASK_INITIALIZED_KEY, False)) and not force:
+        return False
     runtime.write_image_gray8(image, mask.astype(np.uint8) * np.uint8(255))
     image[runtime.AUX_MASK_INITIALIZED_KEY] = True
     item.dirty = bool(force)
@@ -649,37 +660,135 @@ def _material_slot_items(_operator, context):
 def _selected_material_slot(operator, obj) -> int | None:
     if not obj.material_slots:
         return None
-    suggestion = runtime.analyze_material_slots(obj)
-    candidates = suggestion.candidates
+    candidates = runtime.material_slot_candidates(obj)
     if not candidates:
         raise ValueError("Assign a material to the face surface first")
     property_set = bool(operator.properties.is_property_set("material_slot"))
-    if str(suggestion.confidence) == "LOW" and not property_set:
+    if len(candidates) > 1 and not property_set:
         raise ValueError(
-            "This mesh uses multiple materials; choose which material contains the face surface"
+            "This mesh uses multiple materials; choose a surface or select Face Area polygons"
         )
-    index = int(operator.material_slot) if property_set else int(suggestion.index)
+    index = int(operator.material_slot) if property_set else int(candidates[0])
     if index not in candidates:
         raise ValueError("The selected material is not assigned to any faces")
     return index
 
 
-def _invoke_material_slot_dialog(operator, context, *, force: bool = False):
+def _invoke_material_slot_dialog(operator, context):
     obj = context.active_object
-    suggestion = runtime.analyze_material_slots(obj)
-    if not suggestion.candidates or (
-        str(suggestion.confidence) != "LOW" and not force
-    ):
+    selected = runtime.selected_edit_face_mask(obj)
+    if selected is not None:
         return operator.execute(context)
-    operator.material_slot = str(suggestion.index)
+    candidates = runtime.material_slot_candidates(obj)
+    if len(candidates) <= 1:
+        return operator.execute(context)
+    active = int(getattr(obj, "active_material_index", 0))
+    operator.material_slot = str(active if active in candidates else candidates[0])
     return context.window_manager.invoke_props_dialog(operator, width=360)
 
 
 def _draw_material_slot_dialog(operator) -> None:
     layout = operator.layout
-    layout.label(text="Which material contains the face surface?", icon="MATERIAL")
+    layout.label(text="Which surface should become the Face Area?", icon="MATERIAL")
     layout.prop(operator, "material_slot", text="Surface")
-    layout.label(text="This is used only to isolate 3D painting.", icon="INFO")
+    layout.label(text="For a shared body material, cancel and select faces instead.", icon="INFO")
+
+
+def _creation_face_mask(context, operator, obj):
+    """Resolve explicit faces first, otherwise use an explicitly chosen slot."""
+
+    import numpy as np
+
+    selected = runtime.selected_edit_face_mask(obj)
+    if selected is not None:
+        if not np.any(selected):
+            raise ValueError("Select the polygons used by the face shadow first")
+        return np.ascontiguousarray(selected, dtype=np.bool_)
+    if not obj.material_slots:
+        return np.ones(len(obj.data.polygons), dtype=np.bool_)
+    slot_index = _selected_material_slot(operator, obj)
+    if slot_index is None:
+        raise ValueError("Choose the Face Area surface")
+    values = np.fromiter(
+        (int(polygon.material_index) == int(slot_index) for polygon in obj.data.polygons),
+        dtype=np.bool_,
+        count=len(obj.data.polygons),
+    )
+    if not np.any(values):
+        raise ValueError("The selected surface has no faces")
+    return np.ascontiguousarray(values)
+
+
+def _validate_face_region_uv_separation(project) -> None:
+    """Reject UV overlap that one texture cannot distinguish from the Face Area."""
+
+    import numpy as np
+
+    from .bake import rasterize_uv_normals
+
+    obj = project.target_object
+    mesh = obj.data
+    uv_layer = mesh.uv_layers.get(str(project.uv_map_name))
+    if uv_layer is None:
+        return
+    region = runtime.face_region_mask(project, obj)
+    region_slots = frozenset(runtime.face_region_material_slots(project))
+    mesh.calc_loop_triangles()
+    if not mesh.loop_triangles:
+        return
+    triangle_polygons = np.fromiter(
+        (int(item.polygon_index) for item in mesh.loop_triangles),
+        dtype=np.int32,
+        count=len(mesh.loop_triangles),
+    )
+    triangle_loops = np.asarray(
+        [tuple(item.loops) for item in mesh.loop_triangles], dtype=np.int32
+    )
+    uv_values = np.asarray(
+        [tuple(item.uv) for item in uv_layer.data], dtype=np.float32
+    )
+    triangle_uvs = np.ascontiguousarray(uv_values[triangle_loops])
+    dummy_normals = np.zeros((triangle_uvs.shape[0], 3, 3), dtype=np.float32)
+    dummy_normals[..., 2] = 1.0
+    selected = region[triangle_polygons]
+    outside_same_surface = np.fromiter(
+        (
+            not bool(region[int(polygon_index)])
+            and int(mesh.polygons[int(polygon_index)].material_index) in region_slots
+            for polygon_index in triangle_polygons
+        ),
+        dtype=np.bool_,
+        count=triangle_polygons.size,
+    )
+    if not np.any(selected) or not np.any(outside_same_surface):
+        return
+    size = min(512, int(project.resolution))
+    _normal, selected_uv = rasterize_uv_normals(
+        triangle_uvs[selected], dummy_normals[selected], size, size
+    )
+    _normal, outside_uv = rasterize_uv_normals(
+        triangle_uvs[outside_same_surface],
+        dummy_normals[outside_same_surface],
+        size,
+        size,
+    )
+
+    def interior(mask):
+        result = np.zeros_like(mask)
+        result[1:-1, 1:-1] = (
+            mask[1:-1, 1:-1]
+            & mask[:-2, 1:-1]
+            & mask[2:, 1:-1]
+            & mask[1:-1, :-2]
+            & mask[1:-1, 2:]
+        )
+        return result
+
+    if np.any(interior(selected_uv) & interior(outside_uv)):
+        raise ValueError(
+            "The selected Face Area overlaps body UVs that use the same material; "
+            "separate those UVs before creating the threshold map"
+        )
 
 
 def _create_project_data(
@@ -687,7 +796,7 @@ def _create_project_data(
     *,
     sync_ui: bool = True,
     activate: bool = True,
-    material_slot_index: int | None = None,
+    face_region_mask=None,
 ):
     obj = context.active_object
     if obj is None or obj.type != "MESH":
@@ -703,25 +812,14 @@ def _create_project_data(
     if not obj.material_slots:
         created_material = bpy.data.materials.new(f"{obj.name} Quick SDF")
         obj.data.materials.append(created_material)
-        material_slot_index = 0
-    candidates = runtime.material_slot_candidates(obj)
-    if material_slot_index is None:
-        if len(candidates) > 1:
-            raise ValueError(
-                "This mesh uses multiple materials; choose which material contains the face surface"
-            )
-        if not candidates:
-            raise ValueError("Assign a material to the face surface first")
-        material_slot_index = int(candidates[0])
-    if int(material_slot_index) not in candidates:
-        raise ValueError("The selected material is not assigned to any faces")
+    if face_region_mask is None:
+        raise ValueError("The Face Area was not specified")
     previous_index = int(getattr(context.scene, "quick_sdf_active_project_index", -1))
     project = context.scene.quick_sdf_projects.add()
     created_index = len(context.scene.quick_sdf_projects) - 1
     project.uuid = runtime.new_uuid()
     project.name = f"{obj.name} Face Shadow"
     project.target_object = obj
-    project.material_slot_index = int(material_slot_index)
     project.uv_map_name = obj.data.uv_layers.active.name
     project.resolution = int(settings.resolution)
     project.authoring_side = "RIGHT"
@@ -735,6 +833,8 @@ def _create_project_data(
     }.get(str(settings.initialization), "NORMAL_GUIDE")
     project.guide_shadow_amount = 50.0
     try:
+        runtime.create_face_region_attribute(project, obj, face_region_mask)
+        _validate_face_region_uv_separation(project)
         source = settings.source_image if settings.initialization == "EXISTING" else None
         runtime.create_project_images(project, source)
         _ensure_project_aux_images(project)
@@ -753,6 +853,7 @@ def _create_project_data(
         return project
     except Exception:
         runtime.remove_project_images(project)
+        runtime.remove_face_region_attribute(project)
         remove_index = next(
             (
                 index
@@ -777,6 +878,57 @@ def _create_project_data(
         raise
 
 
+class QUICKSDF_OT_face_area_select(bpy.types.Operator):
+    bl_idname = "quicksdf.face_area_select"
+    bl_label = "Select Face Area"
+    bl_description = "Select the polygons that should use the face-shadow map"
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return (
+            obj is not None
+            and obj.type == "MESH"
+            and _project_for_object(context.scene, obj) is None
+        )
+
+    def execute(self, context):
+        obj = context.active_object
+        try:
+            if obj.mode != "EDIT":
+                bpy.ops.object.mode_set(mode="EDIT")
+                bpy.ops.mesh.select_all(action="DESELECT")
+            context.scene.tool_settings.mesh_select_mode = (False, False, True)
+        except RuntimeError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        self.report(
+            {"INFO"},
+            "Select the face polygons, then click Create & Edit Selected Faces",
+        )
+        return {"FINISHED"}
+
+
+class QUICKSDF_OT_face_area_cancel(bpy.types.Operator):
+    bl_idname = "quicksdf.face_area_cancel"
+    bl_label = "Cancel Face Area Selection"
+    bl_description = "Return to Object Mode without creating a project"
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return obj is not None and obj.type == "MESH" and obj.mode == "EDIT"
+
+    def execute(self, _context):
+        try:
+            bpy.ops.object.mode_set(mode="OBJECT")
+        except RuntimeError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        return {"FINISHED"}
+
+
 class QUICKSDF_OT_project_create(bpy.types.Operator):
     bl_idname = "quicksdf.project_create"
     bl_label = "Create Quick SDF Project"
@@ -796,10 +948,20 @@ class QUICKSDF_OT_project_create(bpy.types.Operator):
         _draw_material_slot_dialog(self)
 
     def execute(self, context):
+        obj = context.active_object
+        was_edit = bool(obj is not None and obj.mode == "EDIT")
         try:
-            material_slot_index = _selected_material_slot(self, context.active_object)
-            _create_project_data(context, material_slot_index=material_slot_index)
+            face_region = _creation_face_mask(context, self, obj)
+            if was_edit:
+                bpy.ops.object.mode_set(mode="OBJECT")
+            _create_project_data(context, face_region_mask=face_region)
         except Exception as exc:
+            if was_edit and obj is not None and obj.name in context.view_layer.objects:
+                try:
+                    _set_active_object(context, obj)
+                    bpy.ops.object.mode_set(mode="EDIT")
+                except RuntimeError:
+                    pass
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
         self.report({"INFO"}, "Created and auto-baked nine face-shadow keys")
@@ -848,6 +1010,7 @@ class QUICKSDF_OT_project_remove(bpy.types.Operator):
             self.report({"ERROR"}, f"Could not restore preview material: {exc}")
             return {"CANCELLED"}
         runtime.remove_project_images(project)
+        runtime.remove_face_region_attribute(project)
         context.scene.quick_sdf_projects.remove(index)
         context.scene.quick_sdf_active_project_index = min(index, len(context.scene.quick_sdf_projects) - 1)
         if context.scene.quick_sdf_projects:
@@ -896,7 +1059,6 @@ class QUICKSDF_OT_create_and_edit(bpy.types.Operator):
     )
 
     material_slot: EnumProperty(name="Surface", items=_material_slot_items)
-    choose_material: BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})
 
     @classmethod
     def poll(cls, context):
@@ -908,17 +1070,14 @@ class QUICKSDF_OT_create_and_edit(bpy.types.Operator):
         )
         if project is not None:
             return self.execute(context)
-        return _invoke_material_slot_dialog(
-            self,
-            context,
-            force=bool(self.choose_material),
-        )
+        return _invoke_material_slot_dialog(self, context)
 
     def draw(self, _context):
         _draw_material_slot_dialog(self)
 
     def execute(self, context):
         target_object = context.active_object
+        was_edit = bool(target_object is not None and target_object.mode == "EDIT")
         _existing_index, project = _project_entry_for_object(context.scene, target_object)
         created = project is None
         previous_index = int(getattr(context.scene, "quick_sdf_active_project_index", -1))
@@ -926,12 +1085,14 @@ class QUICKSDF_OT_create_and_edit(bpy.types.Operator):
             if project is None:
                 # Do not replace the live Studio canvas while the target is
                 # still being created and baked. The switch commits later.
-                material_slot_index = _selected_material_slot(self, target_object)
+                face_region = _creation_face_mask(context, self, target_object)
+                if was_edit:
+                    bpy.ops.object.mode_set(mode="OBJECT")
                 project = _create_project_data(
                     context,
                     sync_ui=False,
                     activate=False,
-                    material_slot_index=material_slot_index,
+                    face_region_mask=face_region,
                 )
             from .studio import open_or_switch_studio
 
@@ -942,6 +1103,7 @@ class QUICKSDF_OT_create_and_edit(bpy.types.Operator):
                 if created_project is not None and remove_index is not None:
                     project = created_project
                     runtime.remove_project_images(project)
+                    runtime.remove_face_region_attribute(project)
                     context.scene.quick_sdf_projects.remove(remove_index)
                     if context.scene.quick_sdf_projects:
                         context.scene.quick_sdf_active_project_index = max(
@@ -949,6 +1111,12 @@ class QUICKSDF_OT_create_and_edit(bpy.types.Operator):
                         )
                     else:
                         context.scene.quick_sdf_active_project_index = -1
+            if was_edit and target_object is not None:
+                try:
+                    _set_active_object(context, target_object)
+                    bpy.ops.object.mode_set(mode="EDIT")
+                except RuntimeError:
+                    pass
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
         return {"FINISHED"}
@@ -1948,10 +2116,11 @@ def _symmetry_island_pairs(project, shape):
     uv_layer = obj.data.uv_layers.get(project.uv_map_name) if obj is not None else None
     if uv_layer is None:
         return []
+    region = runtime.face_region_mask(project, obj)
     faces = [
         [tuple(uv_layer.data[index].uv) for index in polygon.loop_indices]
-        for polygon in obj.data.polygons
-        if polygon.material_index == int(project.material_slot_index)
+        for polygon_index, polygon in enumerate(obj.data.polygons)
+        if bool(region[polygon_index])
     ]
     loops = uv_boundary_loops(faces)
     height, width = shape
@@ -2124,6 +2293,14 @@ class QUICKSDF_OT_propagate_overrides(bpy.types.Operator):
                     coverage_before is not None and coverage_before.shape != before_gray.shape
                 ):
                     raise ValueError("The active paint image changed size during the stroke")
+                face_uv = runtime.face_region_uv_mask(project)
+                if face_uv.shape != source_gray.shape:
+                    raise ValueError("The Face Area UV mask changed size during the stroke")
+                outside = (source_gray != before_gray) & ~face_uv
+                if np.any(outside):
+                    source_gray = source_gray.copy()
+                    source_gray[outside] = before_gray[outside]
+                    runtime.write_image_gray8(source_image, source_gray)
                 touched = source_gray != before_gray
                 if not np.any(touched):
                     interactive_no_change = True
@@ -3005,7 +3182,7 @@ def _export_revision_token(project):
     return (
         str(getattr(project, "uuid", "")),
         str(getattr(getattr(project, "target_object", None), "name_full", "")),
-        int(getattr(project, "material_slot_index", 0)),
+        runtime.face_region_revision_token(project),
         str(getattr(project, "uv_map_name", "")),
         int(getattr(project, "resolution", 0)),
         str(getattr(project, "base_signature", "")),
@@ -4059,6 +4236,8 @@ class QUICKSDF_OT_export_mask_sequence(bpy.types.Operator):
 
 
 CLASSES = (
+    QUICKSDF_OT_face_area_select,
+    QUICKSDF_OT_face_area_cancel,
     QUICKSDF_OT_project_create,
     QUICKSDF_OT_project_remove,
     QUICKSDF_OT_set_forward_from_view,

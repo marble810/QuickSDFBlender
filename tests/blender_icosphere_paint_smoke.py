@@ -78,8 +78,9 @@ def _assert_active_tools() -> dict[str, str | None]:
 
 
 def _graph_state(obj: bpy.types.Object, project, canvas) -> dict[str, object]:
-    material = obj.material_slots[int(project.material_slot_index)].material
-    expected = bpy.data.materials.get(str(project.preview_material_name))
+    state = next(iter(project.preview_slots))
+    material = obj.material_slots[int(state.slot_index)].material
+    expected = bpy.data.materials.get(str(state.preview_material_name))
     assert material is not None and material == expected
     nodes = material.node_tree.nodes
     links = material.node_tree.links

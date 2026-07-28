@@ -13,6 +13,8 @@ NODE_GROUP_OWNER_KEY = "quick_sdf_preview_contract_owner"
 MATERIAL_PREFIX = "QSDF Preview - "
 RESTORE_KEY = "_quick_sdf_material_restore_v1"
 SOURCE_MATERIAL_KEY = "quick_sdf_preview_source_material"
+PREVIEW_PROJECT_KEY = "quick_sdf_preview_project_uuid"
+PREVIEW_SLOT_KEY = "quick_sdf_preview_slot"
 _SAVE_SUSPENDED_PROJECT_UUID = ""
 
 
@@ -117,7 +119,22 @@ if bpy is not None:
         return group
 
 
-    def ensure_preview_material(project: Any, image: Any | None = None) -> Any:
+    def _preview_slot_state(project: Any, slot_index: int) -> Any | None:
+        return next(
+            (
+                item
+                for item in getattr(project, "preview_slots", ())
+                if int(getattr(item, "slot_index", -1)) == int(slot_index)
+            ),
+            None,
+        )
+
+
+    def ensure_preview_material(
+        project: Any,
+        image: Any | None = None,
+        slot_state: Any | None = None,
+    ) -> Any:
         """Create a reversible Original + Paint Overlay material.
 
         The artist's material is copied rather than replaced with an unrelated
@@ -126,23 +143,34 @@ if bpy is not None:
         readable while the white/black authoring decision remains obvious.
         """
         uuid = _project_uuid(project)
-        source = project.original_material
+        if slot_state is None:
+            slot_state = next(iter(getattr(project, "preview_slots", ())), None)
+        if slot_state is None:
+            raise ValueError("Quick SDF preview has no Face Area material slot")
+        slot_index = int(slot_state.slot_index)
+        source = slot_state.original_material
         source_name = source.name if source is not None else ""
-        stored_name = project.preview_material_name
+        stored_name = str(slot_state.preview_material_name)
         material = bpy.data.materials.get(stored_name) if stored_name else None
-        if material is not None and str(material.get(SOURCE_MATERIAL_KEY, "")) != source_name:
+        if material is not None and (
+            str(material.get(SOURCE_MATERIAL_KEY, "")) != source_name
+            or str(material.get(PREVIEW_PROJECT_KEY, "")) != uuid
+            or int(material.get(PREVIEW_SLOT_KEY, -1)) != slot_index
+        ):
             # The target slot changed since the last Studio session.  Keeping a
             # stale copy would be surprising, so replace only our temporary ID.
             bpy.data.materials.remove(material)
             material = None
         if material is None:
             material = source.copy() if source is not None else bpy.data.materials.new(
-                f"{MATERIAL_PREFIX}{uuid[:8]}"
+                f"{MATERIAL_PREFIX}{uuid[:8]} - {slot_index + 1}"
             )
-            material.name = f"{MATERIAL_PREFIX}{uuid[:8]}"
+            material.name = f"{MATERIAL_PREFIX}{uuid[:8]} - {slot_index + 1}"
             material[SOURCE_MATERIAL_KEY] = source_name
+            material[PREVIEW_PROJECT_KEY] = uuid
+            material[PREVIEW_SLOT_KEY] = slot_index
             material.use_fake_user = False
-            project.preview_material_name = material.name
+            slot_state.preview_material_name = material.name
         material.use_nodes = True
         nodes = material.node_tree.nodes
         links = material.node_tree.links
@@ -188,6 +216,16 @@ if bpy is not None:
         mix_shader.name = "QSDF Original Overlay"
         mix_shader.label = "Original + Paint Overlay"
         mix_shader.location = (430, 20)
+        region_attribute = nodes.get("QSDF Face Area") or nodes.new("ShaderNodeAttribute")
+        region_attribute.name = "QSDF Face Area"
+        region_attribute.label = "Face Area"
+        region_attribute.attribute_name = str(project.face_region_attribute_name)
+        region_attribute.location = (-170, 150)
+        region_factor = nodes.get("QSDF Face Area Strength") or nodes.new("ShaderNodeMath")
+        region_factor.name = "QSDF Face Area Strength"
+        region_factor.label = "Face Area × Preview Strength"
+        region_factor.operation = "MULTIPLY"
+        region_factor.location = (180, 150)
         # On the first build the existing output link is the copied original
         # shader. On later calls it already points to our mix and is left alone.
         original_socket = None
@@ -213,7 +251,7 @@ if bpy is not None:
             original_socket = base.outputs["BSDF"]
 
         preview_mode = str(project.preview_mode)
-        mix_shader.inputs[0].default_value = 0.35 if preview_mode == "OVERLAY" else 1.0
+        region_factor.inputs[1].default_value = 0.35 if preview_mode == "OVERLAY" else 1.0
         if "Light Color" in group_node.inputs and "Shadow Color" in group_node.inputs:
             if preview_mode == "MASK":
                 group_node.inputs["Light Color"].default_value = (1.0, 1.0, 1.0, 1.0)
@@ -229,26 +267,39 @@ if bpy is not None:
                 link.to_node == output and link.to_socket.name == "Surface"
             ) or (
                 link.to_node == mix_shader and link.to_socket in {mix_shader.inputs[1], mix_shader.inputs[2]}
+            ) or (
+                link.to_node == region_factor
+            ) or (
+                link.to_node == mix_shader and link.to_socket == mix_shader.inputs[0]
             ):
                 links.remove(link)
         links.new(uv_map.outputs["UV"], texture.inputs["Vector"])
         links.new(texture.outputs["Color"], group_node.inputs["Mask"])
         links.new(original_socket, mix_shader.inputs[1])
         links.new(group_node.outputs["Shader"], mix_shader.inputs[2])
+        links.new(region_attribute.outputs["Fac"], region_factor.inputs[0])
+        links.new(region_factor.outputs["Value"], mix_shader.inputs[0])
         links.new(mix_shader.outputs["Shader"], output.inputs["Surface"])
         return material
 
 
     def set_preview_image(project: Any, image: Any) -> Any:
-        stored_name = str(project.preview_material_name)
-        material = bpy.data.materials.get(stored_name) if stored_name else None
-        texture = material.node_tree.nodes.get("QSDF Mask") if material is not None and material.use_nodes else None
-        if texture is None:
-            material = ensure_preview_material(project, image)
-            texture = material.node_tree.nodes.get("QSDF Mask")
-        if texture is not None:
-            texture.image = image
-        return material
+        result = None
+        for state in getattr(project, "preview_slots", ()):
+            stored_name = str(state.preview_material_name)
+            material = bpy.data.materials.get(stored_name) if stored_name else None
+            texture = (
+                material.node_tree.nodes.get("QSDF Mask")
+                if material is not None and material.use_nodes
+                else None
+            )
+            if texture is None:
+                material = ensure_preview_material(project, image, state)
+                texture = material.node_tree.nodes.get("QSDF Mask")
+            if texture is not None:
+                texture.image = image
+            result = material
+        return result
 
 
     def _load_restore_entries(obj: Any) -> list[dict[str, Any]]:
@@ -275,6 +326,7 @@ if bpy is not None:
                 if _project_uuid(candidate) in uuids:
                     candidate.preview_enabled = False
                     candidate.material_override_active = False
+                    candidate.preview_slots.clear()
 
 
     def _project_by_uuid(uuid: str) -> Any | None:
@@ -288,11 +340,13 @@ if bpy is not None:
     def _entry_material(entry: dict[str, Any]) -> Any | None:
         owner = _project_by_uuid(str(entry.get("uuid", "")))
         if owner is not None and bool(owner.material_override_active):
-            if bool(owner.original_material_was_none):
-                return None
-            pointer = owner.original_material
-            if pointer is not None:
-                return pointer
+            state = _preview_slot_state(owner, int(entry.get("slot", -1)))
+            if state is not None:
+                if bool(state.original_material_was_none):
+                    return None
+                pointer = state.original_material
+                if pointer is not None:
+                    return pointer
         material_name = str(entry.get("material", ""))
         return bpy.data.materials.get(material_name) if material_name else None
 
@@ -319,41 +373,46 @@ if bpy is not None:
 
 
     def assign_preview_material(project: Any, image: Any | None = None) -> Any:
-        """Assign preview to one slot, recording enough data for safe restoration.
+        """Assign a face-gated preview to every slot used by the Face Area.
 
-        The slot is switched to object linking before assignment.  The mesh data
+        Slots are switched to object linking before assignment. The mesh data
         and therefore every other object sharing that mesh remain untouched.
         """
+        from . import runtime
+
         obj = _target_object(project)
         if obj is None or obj.type != "MESH":
             raise ValueError("Quick SDF target mesh is unavailable")
-        slot_index = int(project.material_slot_index)
-        if not 0 <= slot_index < len(obj.material_slots):
-            raise ValueError("Quick SDF material slot is unavailable")
-        # A slot has one visible material; allowing preview overrides to stack
-        # makes restoration order ambiguous. Resolve any previous owner first.
-        _restore_slot_entries(obj, slot_index)
+        slot_indices = runtime.face_region_material_slots(project)
+        restore_preview_materials(project)
+        for slot_index in slot_indices:
+            _restore_slot_entries(obj, slot_index)
         entries = _load_restore_entries(obj)
         uuid = _project_uuid(project)
-        slot = obj.material_slots[slot_index]
-        project.original_material = slot.material
-        project.original_material_was_none = slot.material is None
+        project.preview_slots.clear()
         project.material_override_active = True
-        entries.append(
-            {
-                "uuid": uuid,
-                "slot": slot_index,
-                "material": slot.material.name if slot.material else "",
-                "link": slot.link,
-            }
-        )
+        result = None
+        for slot_index in slot_indices:
+            slot = obj.material_slots[slot_index]
+            state = project.preview_slots.add()
+            state.slot_index = slot_index
+            state.original_material = slot.material
+            state.original_material_was_none = slot.material is None
+            entries.append(
+                {
+                    "uuid": uuid,
+                    "slot": slot_index,
+                    "material": slot.material.name if slot.material else "",
+                    "link": slot.link,
+                }
+            )
+            slot.link = "OBJECT"
+            material = ensure_preview_material(project, image, state)
+            slot.material = material
+            result = material
         _save_restore_entries(obj, entries)
-        slot.link = "OBJECT"
-        material = ensure_preview_material(project, image)
-        slot.material = material
-        project.preview_material_name = material.name
         project.preview_enabled = True
-        return material
+        return result
 
 
     def restore_preview_materials(project: Any | None = None, obj: Any | None = None) -> int:
@@ -391,6 +450,7 @@ if bpy is not None:
         if project is not None:
             project.preview_enabled = False
             project.material_override_active = False
+            project.preview_slots.clear()
         return restored
 
 

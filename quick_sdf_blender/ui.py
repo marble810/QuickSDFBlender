@@ -305,30 +305,58 @@ class QSDF_PT_launcher(bpy.types.Panel):
                 return
             info = layout.box()
             info.label(text=obj.name, icon="OUTLINER_OB_MESH")
-            suggestion = runtime.analyze_material_slots(obj)
-            slot_index = int(suggestion.index)
+            selected = runtime.selected_edit_face_mask(obj)
+            if selected is not None:
+                selected_count = int(selected.sum())
+                info.label(
+                    text=f"Face Area: {selected_count:,} selected faces",
+                    icon="FACESEL",
+                )
+                if selected_count == 0:
+                    warning = layout.box()
+                    warning.alert = True
+                    warning.label(text="Select the face polygons in the 3D View", icon="INFO")
+                button = layout.column()
+                button.enabled = selected_count > 0
+                button.scale_y = 1.7
+                button.operator(
+                    "quicksdf.create_and_edit",
+                    text="Create & Edit Selected Faces",
+                    icon="BRUSH_DATA",
+                )
+                layout.operator(
+                    "quicksdf.face_area_cancel",
+                    text="Cancel Face Area Selection",
+                    icon="X",
+                )
+                return
+            candidates = runtime.material_slot_candidates(obj)
+            active_index = int(getattr(obj, "active_material_index", 0))
+            slot_index = (
+                active_index
+                if active_index in candidates
+                else (int(candidates[0]) if candidates else 0)
+            )
             material = (
                 obj.material_slots[slot_index].material
                 if 0 <= slot_index < len(obj.material_slots)
                 else None
             )
             material_name = material.name if material else "A material will be created"
-            if str(suggestion.confidence) == "LOW" and suggestion.candidates:
-                info.label(text="Choose the face surface when creating", icon="MATERIAL")
+            if len(candidates) > 1:
+                info.label(text="Choose a surface when creating", icon="MATERIAL")
             else:
-                info.label(text=f"Surface: {material_name} (Auto)", icon="MATERIAL")
+                info.label(text=f"Face Area: Entire {material_name} surface", icon="MATERIAL")
             button = layout.column()
             button.scale_y = 1.7
             button.operator("quicksdf.create_and_edit", text="Create & Edit", icon="BRUSH_DATA")
-            if len(suggestion.candidates) > 1:
-                choose = layout.operator(
-                    "quicksdf.create_and_edit",
-                    text="Choose Another Surface…",
-                    icon="MATERIAL",
-                )
-                choose.choose_material = True
+            layout.operator(
+                "quicksdf.face_area_select",
+                text="Select Face Area…",
+                icon="FACESEL",
+            )
             layout.label(
-                text="Auto-bakes the current pose, then opens Quick SDF Paint.",
+                text="Use Face Area when the face shares a mesh with the body.",
                 icon="INFO",
             )
             return
@@ -393,15 +421,16 @@ class QSDF_PT_advanced(bpy.types.Panel):
         column = layout.column(align=True)
         column.prop(project, "target_object", text="Object")
         obj = project.target_object
-        slot_index = int(project.material_slot_index)
-        material = (
-            obj.material_slots[slot_index].material
-            if obj is not None and 0 <= slot_index < len(obj.material_slots)
-            else None
-        )
+        try:
+            slot_count = len(runtime.face_region_material_slots(project))
+        except ValueError:
+            slot_count = 0
         column.label(
-            text=f"Surface: {material.name if material else 'Unavailable'}",
-            icon="MATERIAL",
+            text=(
+                f"Face Area: {int(project.face_region_face_count):,} faces"
+                f" · {slot_count} material{'s' if slot_count != 1 else ''}"
+            ),
+            icon="FACESEL",
         )
         column.prop(project, "uv_map_name", text="UV Map")
         column.prop(project, "resolution")

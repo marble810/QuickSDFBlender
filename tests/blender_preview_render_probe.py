@@ -25,14 +25,28 @@ import numpy as np  # noqa: E402
 def _full_uv_plane() -> bpy.types.Object:
     bpy.ops.object.select_all(action="SELECT")
     bpy.ops.object.delete(use_global=False)
-    bpy.ops.mesh.primitive_plane_add(size=2.0)
-    obj = bpy.context.object
+    mesh = bpy.data.meshes.new("Quick SDF Preview Region Mesh")
+    mesh.from_pydata(
+        ((-1.0, -1.0, 0.0), (0.0, -1.0, 0.0), (1.0, -1.0, 0.0),
+         (-1.0, 1.0, 0.0), (0.0, 1.0, 0.0), (1.0, 1.0, 0.0)),
+        (),
+        ((0, 1, 4, 3), (1, 2, 5, 4)),
+    )
+    obj = bpy.data.objects.new("Quick SDF Preview Regression Plane", mesh)
+    bpy.context.collection.objects.link(obj)
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
     obj.name = "Quick SDF Preview Regression Plane"
 
-    uv_layer = obj.data.uv_layers.active or obj.data.uv_layers.new(name="PreviewUV")
-    for loop in obj.data.loops:
-        co = obj.data.vertices[loop.vertex_index].co
-        uv_layer.data[loop.index].uv = (co.x * 0.5 + 0.5, co.y * 0.5 + 0.5)
+    uv_layer = obj.data.uv_layers.new(name="PreviewUV")
+    for polygon_index, polygon in enumerate(obj.data.polygons):
+        u0, u1 = ((0.0, 0.5) if polygon_index == 0 else (0.5, 1.0))
+        for loop_index, uv in zip(
+            polygon.loop_indices,
+            ((u0, 0.0), (u1, 0.0), (u1, 1.0), (u0, 1.0)),
+            strict=True,
+        ):
+            uv_layer.data[loop_index].uv = uv
     obj.data.uv_layers.active = uv_layer
 
     material = bpy.data.materials.new("Preview Regression Source")
@@ -69,7 +83,7 @@ def _camera(scene: bpy.types.Scene) -> None:
     scene.camera = camera
 
 
-def _render_center(scene: bpy.types.Scene, label: str) -> np.ndarray:
+def _render_face_and_body(scene: bpy.types.Scene, label: str) -> tuple[np.ndarray, np.ndarray]:
     output = ROOT / "build" / f"preview_render_smoke_{label}.png"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.unlink(missing_ok=True)
@@ -82,15 +96,18 @@ def _render_center(scene: bpy.types.Scene, label: str) -> np.ndarray:
         pixels = np.empty(width * height * 4, dtype=np.float32)
         loaded.pixels.foreach_get(pixels)
         rgba = pixels.reshape(height, width, 4)
-        center_x = width // 2
         center_y = height // 2
-        patch = rgba[
-            max(0, center_y - 3) : min(height, center_y + 4),
-            max(0, center_x - 3) : min(width, center_x + 4),
-            :3,
-        ]
-        assert patch.size
-        return np.median(patch, axis=(0, 1))
+        samples = []
+        for fraction in (0.292, 0.708):
+            center_x = int(round(width * fraction))
+            patch = rgba[
+                max(0, center_y - 3) : min(height, center_y + 4),
+                max(0, center_x - 3) : min(width, center_x + 4),
+                :3,
+            ]
+            assert patch.size
+            samples.append(np.median(patch, axis=(0, 1)))
+        return samples[0], samples[1]
     finally:
         bpy.data.images.remove(loaded)
         output.unlink(missing_ok=True)
@@ -122,9 +139,18 @@ scene.render.film_transparent = False
 scene.world.color = (0.02, 0.02, 0.02)
 scene.quick_sdf_settings.resolution = 512
 scene.quick_sdf_settings.initialization = "WHITE"
+import bmesh  # noqa: E402
+
+bpy.ops.object.mode_set(mode="EDIT")
+edit_mesh = bmesh.from_edit_mesh(obj.data)
+edit_mesh.faces.ensure_lookup_table()
+for face in edit_mesh.faces:
+    face.select = face.index == 0
+bmesh.update_edit_mesh(obj.data)
 assert bpy.ops.quicksdf.project_create() == {"FINISHED"}
 project = runtime.active_project(scene)
 assert project is not None
+bpy.ops.object.mode_set(mode="OBJECT")
 project.preview_mode = "MASK"
 assert bpy.ops.quicksdf.preview_enable() == {"FINISHED"}
 
@@ -172,16 +198,21 @@ assert all(
 _write_canvas(runtime, canvas, 1.0)
 runtime.sync_canvas(bpy.context, project)
 assert mask_node.image == canvas
-white = _render_center(scene, "white")
+white, white_body = _render_face_and_body(scene, "white")
 
 _write_canvas(runtime, canvas, 0.0)
 runtime.sync_canvas(bpy.context, project)
 assert mask_node.image == canvas
-black = _render_center(scene, "black")
+black, black_body = _render_face_and_body(scene, "black")
 
 assert float(np.linalg.norm(white - black)) > 0.35, (white, black)
+assert float(np.linalg.norm(white_body - black_body)) < 0.03, (
+    white_body,
+    black_body,
+)
 print("PREVIEW_RENDER_WHITE", white)
 print("PREVIEW_RENDER_BLACK", black)
+print("PREVIEW_RENDER_BODY", white_body, black_body)
 print("[Quick SDF preview render smoke] PASS")
 
 assert bpy.ops.quicksdf.preview_disable() == {"FINISHED"}

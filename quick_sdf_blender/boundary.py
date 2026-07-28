@@ -494,10 +494,12 @@ if bpy is not None:
         layer = mesh.uv_layers.get(uv_name) if uv_name else mesh.uv_layers.active
         if layer is None:
             return []
-        material_index = int(getattr(project, "material_slot_index", 0))
+        from . import runtime
+
+        region = runtime.face_region_mask(project, target)
         faces = []
-        for polygon in mesh.polygons:
-            if polygon.material_index != material_index:
+        for polygon_index, polygon in enumerate(mesh.polygons):
+            if not bool(region[polygon_index]):
                 continue
             faces.append([layer.data[loop_index].uv for loop_index in polygon.loop_indices])
         return uv_boundary_loops(faces)
@@ -541,6 +543,11 @@ if bpy is not None:
         local_direction = (inverse.to_3x3() @ direction).normalized()
         hit, location, _normal, face_index = target.ray_cast(local_origin, local_direction)
         if not hit:
+            return None
+        from . import runtime
+
+        region = runtime.face_region_mask(project, target)
+        if not 0 <= int(face_index) < region.size or not bool(region[int(face_index)]):
             return None
         mesh = target.data
         uv_name = getattr(project, "uv_map_name", "")

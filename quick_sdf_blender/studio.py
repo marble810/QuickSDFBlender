@@ -73,7 +73,7 @@ class StudioSession:
     paint_surface_object_pointer: int = 0
     paint_surface_mesh_pointer: int = 0
     paint_surface_polygon_count: int = 0
-    paint_surface_slot_index: int = -1
+    paint_surface_region_revision: int = -1
     paint_surface_previous_use_mask: bool | None = None
     paint_surface_previous_use_mask_vertex: bool | None = None
     paint_surface_previous_selection: bytes = b""
@@ -218,9 +218,13 @@ def _preflight_studio_target(context: Any, project: Any) -> tuple[Any, int, Any,
         raise StudioError("The Quick SDF target must be a local mesh")
     if obj.name not in context.view_layer.objects:
         raise StudioError("The Quick SDF target is not visible in the current View Layer")
-    slot_index = int(project.material_slot_index)
-    if not 0 <= slot_index < len(obj.material_slots):
-        raise StudioError("The Quick SDF material slot is unavailable")
+    try:
+        from . import runtime
+
+        runtime.face_region_mask(project, obj)
+        runtime.face_region_material_slots(project)
+    except (ValueError, RuntimeError) as exc:
+        raise StudioError(str(exc)) from exc
     uv_name = str(project.uv_map_name)
     if not uv_name or getattr(obj.data, "uv_layers", None) is None or obj.data.uv_layers.get(uv_name) is None:
         raise StudioError("The Quick SDF UV map is unavailable")
@@ -1852,7 +1856,7 @@ def _clear_paint_surface_snapshot(session: StudioSession) -> None:
     session.paint_surface_object_pointer = 0
     session.paint_surface_mesh_pointer = 0
     session.paint_surface_polygon_count = 0
-    session.paint_surface_slot_index = -1
+    session.paint_surface_region_revision = -1
     session.paint_surface_previous_use_mask = None
     session.paint_surface_previous_use_mask_vertex = None
     session.paint_surface_previous_selection = b""
@@ -2017,15 +2021,19 @@ def _apply_paint_surface_isolation(
     scene: Any | None = None,
     window: Any | None = None,
 ) -> None:
-    """Limit native Projection Paint to the project's material and UV surface."""
+    """Limit native Projection Paint to the artist-defined Face Area."""
 
     obj = getattr(project, "target_object", None)
     if obj is None or getattr(obj, "type", "") != "MESH":
         raise StudioError("The Quick SDF paint surface is unavailable")
     mesh = obj.data
-    slot_index = int(project.material_slot_index)
-    if not 0 <= slot_index < len(obj.material_slots):
-        raise StudioError("The Quick SDF material slot is unavailable")
+    try:
+        from . import runtime
+
+        region = runtime.face_region_mask(project, obj)
+        slot_indices = runtime.face_region_material_slots(project)
+    except (ValueError, RuntimeError) as exc:
+        raise StudioError(str(exc)) from exc
     uv_layer = mesh.uv_layers.get(str(project.uv_map_name))
     if uv_layer is None:
         raise StudioError("The Quick SDF UV map is unavailable")
@@ -2034,7 +2042,7 @@ def _apply_paint_surface_isolation(
         session.paint_surface_object_name == obj.name
         and session.paint_surface_mesh_name == mesh.name
         and session.paint_surface_polygon_count == len(mesh.polygons)
-        and session.paint_surface_slot_index == slot_index
+        and session.paint_surface_region_revision == int(project.face_region_revision)
     )
     if session.paint_surface_object_name and not snapshot_matches:
         if not _restore_paint_surface_isolation(session, clear=True):
@@ -2050,7 +2058,7 @@ def _apply_paint_surface_isolation(
         session.paint_surface_object_pointer = int(obj.as_pointer())
         session.paint_surface_mesh_pointer = int(mesh.as_pointer())
         session.paint_surface_polygon_count = count
-        session.paint_surface_slot_index = slot_index
+        session.paint_surface_region_revision = int(project.face_region_revision)
         session.paint_surface_previous_use_mask = bool(mesh.use_paint_mask)
         session.paint_surface_previous_use_mask_vertex = (
             bool(mesh.use_paint_mask_vertex)
@@ -2073,22 +2081,22 @@ def _apply_paint_surface_isolation(
         "b",
         (
             1
-            if int(polygon.material_index) == slot_index and not original_hidden[index]
+            if bool(region[index]) and not original_hidden[index]
             else 0
-            for index, polygon in enumerate(mesh.polygons)
+            for index in range(count)
         ),
     )
     hidden = array("b", original_hidden)
     if len(selection) != count or len(hidden) != count:
         raise StudioError("The Quick SDF mesh topology changed while painting")
     if count and not any(selection):
-        raise StudioError("All faces in the Quick SDF material slot are hidden")
+        raise StudioError("All faces in the Quick SDF Face Area are hidden")
     mesh.polygons.foreach_set("select", selection)
     mesh.polygons.foreach_set("hide", hidden)
     mesh.use_paint_mask = True
     if hasattr(mesh, "use_paint_mask_vertex"):
         mesh.use_paint_mask_vertex = False
-    obj.active_material_index = slot_index
+    obj.active_material_index = int(slot_indices[0])
     mesh.uv_layers.active_index = next(
         index for index, candidate in enumerate(mesh.uv_layers) if candidate == uv_layer
     )
@@ -2229,16 +2237,27 @@ def _restore_preview(project: Any | None) -> None:
 
 def _assign_preview(project: Any, image: Any | None) -> None:
     from .preview import assign_preview_material, set_preview_image
+    from . import runtime
 
     obj = project.target_object
-    slot_index = int(project.material_slot_index)
-    material_name = str(project.preview_material_name)
-    material = bpy.data.materials.get(material_name) if material_name else None
+    expected_slots = runtime.face_region_material_slots(project)
+    states = tuple(getattr(project, "preview_slots", ()))
+    state_slots = tuple(sorted(int(state.slot_index) for state in states))
+    materials_match = bool(obj is not None and state_slots == expected_slots)
+    if materials_match:
+        for state in states:
+            slot_index = int(state.slot_index)
+            material = bpy.data.materials.get(str(state.preview_material_name))
+            if (
+                material is None
+                or not 0 <= slot_index < len(obj.material_slots)
+                or obj.material_slots[slot_index].material != material
+            ):
+                materials_match = False
+                break
     if (
-        obj is not None
-        and 0 <= slot_index < len(getattr(obj, "material_slots", ()))
-        and material is not None
-        and obj.material_slots[slot_index].material == material
+        materials_match
+        and bool(project.material_override_active)
     ):
         # Key selection only changes the Image node. Rebuilding and rewiring
         # the whole material here used to compile a shader on every stroke and

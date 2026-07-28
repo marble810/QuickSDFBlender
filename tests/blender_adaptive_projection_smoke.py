@@ -184,7 +184,7 @@ def _check() -> float | None:
         if phase == "WAIT_STUDIO":
             assert obj.mode == "TEXTURE_PAINT"
             assert len(_lane(project)) == 9
-            assert int(project.material_slot_index) == 1
+            assert runtime.face_region_material_slots(project) == (1,)
             originals = STATE["original_materials"]
             assert obj.material_slots[0].material == originals[0]
             assert obj.material_slots[2].material == originals[2]

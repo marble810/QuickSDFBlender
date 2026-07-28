@@ -57,8 +57,9 @@ def _assert_isolated_host(project, original_tree):
     area, _region = _timeline_context()
     space = area.spaces.active
     host = space.node_tree
+    preview_state = next(iter(project.preview_slots))
     preview_material = project.target_object.material_slots[
-        project.material_slot_index
+        int(preview_state.slot_index)
     ].material
     assert host is not None
     assert bool(space.pin)

@@ -37,10 +37,11 @@ class BitplaneError(ValueError):
 
 
 class BitplaneRole(IntEnum):
-    """Semantic role of a binary plane stored on an angle key."""
+    """Semantic role of compact binary project data."""
 
     BASE = 1
     COVERAGE = 2
+    FACE_REGION_UV = 3
 
 
 class BitplaneCodec(IntEnum):
