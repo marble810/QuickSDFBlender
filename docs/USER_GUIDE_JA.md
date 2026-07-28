@@ -1,4 +1,4 @@
-# Quick SDF Paint 0.8.0 クイックガイド
+# Quick SDF Paint 0.8.1 クイックガイド
 
 Quick SDF Paintは、トゥーンレンダリング用の顔影スレッショルドマップを作成するBlender Extensionです。法線から作られた顔影の下描きを、アーティストが顔を見ながら `Light` と `Shadow` で直せます。左右反転、書き出し時の角度整合性調整、最終生成は自動で行われます。
 
@@ -32,7 +32,7 @@ Quick SDF Paintは、トゥーンレンダリング用の顔影スレッショ�
 
 正式対応はBlender 5.1／5.2 LTS、Windows x64です。同じExtension ZIPを両バージョンで使用できます。
 
-1. [GitHub Releases](https://github.com/yeczrtu/QuickSDFBlender/releases/latest)から `quick_sdf_blender-0.8.0-windows-x64.zip` を取得します。
+1. [GitHub Releases](https://github.com/yeczrtu/QuickSDFBlender/releases/latest)から `quick_sdf_blender-0.8.1-windows-x64.zip` を取得します。
 2. Blenderの `編集` → `プリファレンス` → `エクステンションを入手` を開きます。
 3. 右上のメニューから `ディスクからインストール` を選びます。
 4. 取得したZIPを展開せずに選択します。

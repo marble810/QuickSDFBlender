@@ -6,7 +6,7 @@ from __future__ import annotations
 bl_info = {
     "name": "Quick SDF Paint",
     "author": "Quick SDF contributors",
-    "version": (0, 8, 0),
+    "version": (0, 8, 1),
     "blender": (5, 1, 0),
     "location": "3D View > Sidebar > Quick SDF",
     "description": "Paint face-shadow threshold maps for toon rendering",
