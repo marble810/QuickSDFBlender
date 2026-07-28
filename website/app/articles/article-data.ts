@@ -49,10 +49,10 @@ export const articles: readonly ArticleRecord[] = [
   },
   {
     slug: "blender-threshold-map-workflow",
-    title: "Quick SDF Paint 0.8.0で顔影スレッショルドマップを作る：Blenderでの実践手順",
-    shortTitle: "Quick SDF Paint 0.8.0の実践手順",
+    title: "Quick SDF Paint 0.9.0で顔影スレッショルドマップを作る：Blenderでの実践手順",
+    shortTitle: "Quick SDF Paint 0.9.0の実践手順",
     description:
-      "Quick SDF Paint 0.8.0で9キーの法線ガイドを修正し、16-bitの顔影スレッショルドマップを書き出す手順を説明します。UV、正面軸、ミラーの問題も切り分けます。",
+      "Quick SDF Paint 0.9.0で9キーの法線ガイドを修正し、16-bitの顔影スレッショルドマップを書き出す手順を説明します。UV、正面軸、ミラーの問題も切り分けます。",
     audience: "Blenderを使うアーティスト",
     readingTime: "約18分",
     category: "Blender実践",

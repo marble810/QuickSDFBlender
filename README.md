@@ -1,4 +1,4 @@
-# Quick SDF Paint 0.8.1
+# Quick SDF Paint 0.9.0
 
 Quick SDF Paintは、Blender 5.1／5.2 LTS上でトゥーンレンダリング用の顔影スレッショルドマップを作成するWindows向けExtensionです。法線から作られた影ガイドを下描きにして、気になる部分だけを直せます。
 
@@ -13,6 +13,8 @@ Quick SDF Paintは、Blender 5.1／5.2 LTS上でトゥーンレンダリング�
 3. 下のタイムラインで角度を選ぶ
 4. `Light` または `Shadow` を選んで、3Dか2Dへ塗る
 5. `Export Threshold Map`
+
+顔専用の面が独立したMaterial Surfaceなら、`Create & Edit`だけで開始できます。顔と身体が同じMaterial／連続したトポロジーに含まれるモデルでは、先に`Select Face Area…`を押し、Edit Modeで顔として扱うPolygonを選択して`Create & Edit Selected Faces`を押します。Quick SDF PaintはObject名、Material名、面積から「顔らしい場所」を推測しません。
 
 `Create & Edit` は、現在のポーズと評価済み法線から9段階の影ガイドを作り、中央の `Side Light 90°` キーを選択した状態で専用のQuick SDF Paintワークスペースを開きます。タイムラインの0～100%は物理的なライト角度ではなく、影がLightへ切り替わる制作上の進行度です。0%では斜め後ろから光が入り始め、50%でライトが厳密に真横を向き、100%で顔全体が明部になります。真横光でも白黒の面積が半分になるとは限りません。左右対称は既定でONです。片側だけ直せば反対側の出力も自動生成されます。
 
@@ -36,13 +38,13 @@ Texture Paintに必要なDisplayだけをRGBA8 Imageとして保持し、Baseと
 
 対応環境はBlender 5.1／5.2 LTS、Windows x64です。同じExtension ZIPを両バージョンで使用できます。
 
-1. [GitHub Releases](https://github.com/yeczrtu/QuickSDFBlender/releases/latest)から `quick_sdf_blender-0.8.1-windows-x64.zip` を取得する
+1. [GitHub Releases](https://github.com/yeczrtu/QuickSDFBlender/releases/latest)から `quick_sdf_blender-0.9.0-windows-x64.zip` を取得する
 2. Blenderで `編集` → `プリファレンス` → `エクステンションを入手` を開く
 3. 右上メニューから `ディスクからインストール` を選ぶ
 4. 取得したZIPを展開せずに選択する
 5. 3D Viewで `N` を押し、`Quick SDF` タブを開く
 
-対象Meshにはローカルの0–1 UV Mapが必要です。初期解像度は1024です。
+対象Meshにはローカルの0–1 UV Mapが必要です。明示的に選んだFace AreaはMaterial Slotをまたいでも構いません。ただし、Face Areaと対象外の面が同じUV座標を共有している場合は別々にペイントできないため、UVを分けてください。初期解像度は1024です。
 
 ## Quick SDF Paintの画面
 

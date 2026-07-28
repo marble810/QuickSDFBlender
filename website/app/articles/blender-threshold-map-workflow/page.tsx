@@ -61,21 +61,21 @@ export default function BlenderWorkflowArticle() {
     <ArticleLayout
       article={article}
       titleParts={[
-        <>Quick SDF Paint <wbr />0.8.0で</>,
+        <>Quick SDF Paint <wbr />0.9.0で</>,
         <>顔影スレッショルド<wbr />マップを作る：</>,
         <>Blenderでの<wbr />実践手順</>,
       ]}
       toc={toc}
-      lead="Quick SDF Paint 0.8.0を使い、9キーの法線ガイドから顔影スレッショルドマップを書き出す実践手順です。キーごとに別の影絵を完成させるのではなく、一つの影境界が制作上の進行度に応じて顔の上をどう移動するかを設計します。"
+      lead="Quick SDF Paint 0.9.0を使い、9キーの法線ガイドから顔影スレッショルドマップを書き出す実践手順です。キーごとに別の影絵を完成させるのではなく、一つの影境界が制作上の進行度に応じて顔の上をどう移動するかを設計します。"
     >
       <EvidenceNote title="動作確認条件">
-        <p>Blender 5.1／5.2 LTS、Quick SDF Paint 0.8.0、1024 px、0～100%の既定9キー、左右ミラーを有効にした状態で確認しました。操作の列挙ではなく、設定の誤りを先に見分ける方法、大きな形から直す順番、顔の部位ごとの判断、静止画と動きの評価を中心にしています。</p>
+        <p>Blender 5.1／5.2 LTS、Quick SDF Paint 0.9.0、1024 px、0～100%の既定9キー、左右ミラーを有効にした状態で確認しました。操作の列挙ではなく、設定の誤りを先に見分ける方法、大きな形から直す順番、顔の部位ごとの判断、静止画と動きの評価を中心にしています。</p>
       </EvidenceNote>
 
       <h2 id="quick-start">完成までの最短5手順</h2>
       <p>完成物は、左右からの光に対する画素ごとの切替位置を格納した16-bit RGBA PNGです。通常の陰影画像ではなく、対応シェーダーが光の向きと比較するデータテクスチャとして使います。</p>
       <ol>
-        <li>顔のメッシュを選び、マテリアルスロットとUVマップを確認する</li>
+        <li>顔のメッシュを選び、顔影を適用するFace AreaとUVマップを確認する</li>
         <li><code>Create &amp; Edit</code>で法線ガイドを作る</li>
         <li>中央付近のキーから<code>Light</code>／<code>Shadow</code>で気になる形だけを直す</li>
         <li>タイムラインを端から端まで動かし、境界の動きを確認する</li>
@@ -92,12 +92,13 @@ export default function BlenderWorkflowArticle() {
       </ol>
       <p>方針が曖昧なまま各キーを個別に仕上げると、静止画ではきれいでも、角度を動かしたときに影の設計が途中で変わって見えます。</p>
 
-      <h2 id="prepare">1. 顔のメッシュとUVを確認する</h2>
-      <p><code>Object Mode</code>で顔を含むメッシュを選び、Quick SDFパネルで対象の<code>Material Slot</code>と<code>UV Map</code>を確認してから<code>Create &amp; Edit</code>を押します。</p>
+      <h2 id="prepare">1. Face AreaとUVを確認する</h2>
+      <p><code>Object Mode</code>で顔を含むメッシュを選びます。顔専用のSurfaceがあるモデルは、そのSurfaceと<code>UV Map</code>を確認して<code>Create &amp; Edit</code>を押します。顔と身体が同じMaterial／連続したトポロジーに含まれる場合は、<code>Select Face Area…</code>を押し、Edit Modeで顔影の対象にするPolygonだけを選択して<code>Create &amp; Edit Selected Faces</code>を押します。</p>
+      <p>Quick SDF PaintはObject名、Material名、Polygonの面積から顔を推測しません。ベイク、3D／2Dペイント、プレビュー、書き出しは、ここで明示した同じFace Areaを使用します。</p>
       <ArticleFigure
         src={`${media}quick-sdf-create-and-edit.png`}
-        alt="Kipfelの顔メッシュ、マテリアルスロット、UVマップを選択したQuick SDFパネル"
-        caption="最初に対象メッシュ、顔へ割り当てたマテリアルスロット、0～1の範囲に収まるUVマップを確認する。"
+        alt="Kipfelの顔メッシュ、Face Area、UVマップを確認するQuick SDFパネル"
+        caption="専用の顔Surfaceなら1クリックで開始する。身体とSurfaceを共有するモデルでは、先にFace AreaのPolygonを明示選択する。"
         width={1920}
         height={1001}
       />
@@ -105,12 +106,12 @@ export default function BlenderWorkflowArticle() {
       <h3>作成前のチェック</h3>
       <ul>
         <li>UVが0～1の範囲に収まっている</li>
-        <li>顔に使うマテリアルスロットを選んでいる</li>
-        <li>対象外の服、髪、アクセサリーの面が同じスロットへ混ざっていない</li>
+        <li>顔影を適用するPolygonだけがFace Areaに含まれている</li>
+        <li>対象外の服、髪、アクセサリーがFace Areaへ混ざっていない</li>
         <li>意図しないUV重複がない</li>
         <li>制作に使う表情、シェイプキー、アーマチュアのポーズになっている</li>
       </ul>
-      <p>2Dキャンバスに顔以外のUVアイランドが大量に見えるときは、ブラシより先に<code>Material Slot</code>を確認します。左右で同じUVを共有する重複はミラー方式として利用できますが、無関係な面が重なっている場合は独立して調整できません。</p>
+      <p>Face Areaは複数のMaterial Slotをまたげます。左右で同じUVを共有する重複はミラー方式として利用できますが、Face Areaと対象外の面が同じUV座標を共有している場合はテクスチャ上で分離できません。その場合はUVを分けてからプロジェクトを作成します。</p>
 
       <h2 id="guide">2. 法線ガイドは完成形ではなく、動きの下描き</h2>
       <p><code>Create &amp; Edit</code>を実行すると、現在のポーズと評価済み法線から角度別の影ガイドが作られます。左の2Dキャンバス、右の3Dビュー、下のタイムラインは同じ角度を示します。</p>
@@ -223,11 +224,11 @@ export default function BlenderWorkflowArticle() {
       <h3>全キーがほぼ白または黒</h3>
       <p>正面方向と<code>Shadow Amount</code>を確認します。方向が誤ったまま大量に塗り直さないでください。</p>
       <h3>2Dには描けるが3Dで変わらない</h3>
-      <p>同じ色の場所へ塗っている、2Dで塗った面が現在の視点から隠れている、別の<code>Material Slot</code>を見ている、という順に確認します。反対色を試し、モデルを回転させます。</p>
-      <h3>顔以外の細かなUVアイランドが大量にある</h3>
-      <p>対象外の面が<code>Material Slot</code>へ含まれている可能性があります。まず、顔に割り当てたマテリアルスロットを選んでいるか確認してください。</p>
-      <p><code>SDF Area</code>は、角度別の顔影を適用する範囲を指定するQuick SDF Paint共通の補助マスクです。顔と対象外の面が別のUVアイランドに分かれている場合は、<code>SDF Area</code>で顔側だけを指定できます。</p>
-      <p>無関係な面が同じUV座標へ重なっている場合は、この補助マスクだけでは分離できません。その場合は、マテリアルスロットまたはUVを分ける必要があります。</p>
+      <p>同じ色の場所へ塗っている、2Dで塗った面が現在の視点から隠れている、Face Area外の面を見ている、という順に確認します。反対色を試し、モデルを回転させます。</p>
+      <h3>顔以外にもペイントされる</h3>
+      <p>プロジェクト作成前に<code>Select Face Area…</code>を押し、Edit Modeで顔影の対象にするPolygonだけを選択してください。面積や名前による自動判定ではなく、このFace Areaが3Dと2Dのペイント範囲になります。</p>
+      <p><code>SDF Area</code>は、角度別の顔影を適用するUV領域を示す補助マスクです。初期状態はFace Areaから作られます。</p>
+      <p>Face Areaと無関係な面が同じUV座標へ重なっている場合は、Face Areaや補助マスクだけでは分離できません。その場合はUVを分ける必要があります。</p>
       <h3>左右で明暗の進行が逆</h3>
       <p>正面軸またはミラー方式を確認します。ペイントで左右を無理に合わせても、出力時の光方向との対応は直りません。</p>
       <h3>ポーズを変えたらガイドと合わない</h3>

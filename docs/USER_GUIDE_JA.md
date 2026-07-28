@@ -1,4 +1,4 @@
-# Quick SDF Paint 0.8.1 クイックガイド
+# Quick SDF Paint 0.9.0 クイックガイド
 
 Quick SDF Paintは、トゥーンレンダリング用の顔影スレッショルドマップを作成するBlender Extensionです。法線から作られた顔影の下描きを、アーティストが顔を見ながら `Light` と `Shadow` で直せます。左右反転、書き出し時の角度整合性調整、最終生成は自動で行われます。
 
@@ -32,7 +32,7 @@ Quick SDF Paintは、トゥーンレンダリング用の顔影スレッショ�
 
 正式対応はBlender 5.1／5.2 LTS、Windows x64です。同じExtension ZIPを両バージョンで使用できます。
 
-1. [GitHub Releases](https://github.com/yeczrtu/QuickSDFBlender/releases/latest)から `quick_sdf_blender-0.8.1-windows-x64.zip` を取得します。
+1. [GitHub Releases](https://github.com/yeczrtu/QuickSDFBlender/releases/latest)から `quick_sdf_blender-0.9.0-windows-x64.zip` を取得します。
 2. Blenderの `編集` → `プリファレンス` → `エクステンションを入手` を開きます。
 3. 右上のメニューから `ディスクからインストール` を選びます。
 4. 取得したZIPを展開せずに選択します。
@@ -44,9 +44,20 @@ Quick SDF Paintは、トゥーンレンダリング用の顔影スレッショ�
 
 - ローカルのMesh Object
 - 0–1範囲内のUV Map
-- 顔に使うMaterial Slot
+- 顔影を適用するFace Area
 
-顔Meshを選択し、使用するMaterial Slotをアクティブにして `Create & Edit` を押します。通常は設定変更不要です。
+顔専用のMaterial Surfaceがあるモデルは、顔Meshを選択して `Create & Edit` を押します。複数のSurfaceがある場合は、顔に使用するものを明示的に選択します。
+
+顔と身体が同じMaterial／連続したトポロジーに含まれるモデルでは、面積や名前から顔を判定できません。次の手順でFace Areaを指定してください。
+
+1. Object Modeで顔を含むMeshを選択します。
+2. Quick SDFパネルの `Select Face Area…` を押します。
+3. Edit Modeで、顔影の対象にするPolygonだけをBlender標準の選択操作で選びます。
+4. `Create & Edit Selected Faces` を押します。
+
+選択したFace AreaはMaterial Slotをまたいでも構いません。Quick SDF PaintはObject名、Material名、Polygonの面積から顔を推測せず、この明示的な選択をBake、3D Paint、2D Canvas、Preview、Exportの共通範囲として使用します。
+
+Face Areaと対象外の面が同じUV座標を共有している場合は、2Dテクスチャ上で分離できません。その場合はUVを分けてからProjectを作成してください。
 
 この1操作で、Quick SDFは次を自動実行します。
 
@@ -172,7 +183,7 @@ Imageの欠損、無効なUV、書き込み権限、ディスク障害などで�
 ここには次の設定があります。
 
 - 作成前：解像度、初期化方法、既存Maskの指定
-- 作成後：Object、Material Slot、UV Map、Forward／Up軸
+- 作成後：Object、Face Area、UV Map、Forward／Up軸
 - Mirror方式と編集側、`Break Mirror`
 - `Adjust Shadow Guide`：`Shadow Amount`を0～100で調整し、手描き部分を保持して更新
 - `Use This View as Front`：顔の正面方向が合わない場合に現在のビューを使う
@@ -215,13 +226,13 @@ Levels、Multiply、Min／Maxなどの演算、ノードグラフ、複数Textur
 
 Project作成時に、次の2枚が自動で用意されます。
 
-- `SDF Area`：対象Material SlotのUV領域が白、領域外が黒。白い場所で角度別の顔影制御を使います。
+- `SDF Area`：Face AreaのUV領域が白、領域外が黒。白い場所で角度別の顔影制御を使います。
 - `Shadow Strength`：初期状態は全面白。黒く塗った場所では顔影を無効化します。
 
 `Advanced` → `Additional Masks`でマスクを選択し、`Edit Mask`を押すと、同じ3D／2D Texture Paint環境で編集できます。この間は角度Timelineを操作できず、「このマスクは全角度共通」と表示されます。上部の`White`／`Black`で塗り、`Back to Face Shadow`で角度別の顔影編集へ戻ります。
 
 - `Fill White`／`Fill Black`：選択中マスクを一色で埋める
-- `Reset SDF Area from UV`：SDF Areaを対象Material SlotのUV占有領域から作り直す
+- `Reset SDF Area from UV`：SDF AreaをFace AreaのUV占有領域から作り直す
 - `Add Custom Mask`：Project専用の任意マスクを追加する
 - `Delete`：Custom Maskを削除する。標準の2枚は削除できない
 - `Import from Image`：既存のBlender ImageからR/G/B/A/Luminanceを読み込む
@@ -233,6 +244,10 @@ Importは元Imageを変更しません。選んだ成分をProject解像度へ�
 ### Create & Editが表示されない
 
 Object Modeで顔のMeshをアクティブ選択してください。リンクされたLibrary Objectはローカル化し、0–1 UV Mapを用意します。
+
+### 顔以外にもペイントされる
+
+顔と身体が同じMaterialに含まれるモデルは、Project作成前に `Select Face Area…` から顔のPolygonだけを明示的に選択してください。Face Area外への3D／2Dストロークは対象になりません。Face Areaと身体が同じUV座標を共有している場合は、先にUVを分ける必要があります。
 
 ### 塗れない
 
