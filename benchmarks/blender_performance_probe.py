@@ -149,14 +149,18 @@ def main() -> None:
     quick_sdf_blender.register()
     results: dict[str, float] = {}
     try:
-        _make_target()
+        target = _make_target()
         settings = bpy.context.scene.quick_sdf_settings
         settings.resolution = int(args.resolution)
         settings.initialization = "WHITE"
         project = _timed(
             results,
             "project_create_seconds",
-            lambda: operators._create_project_data(bpy.context, sync_ui=False),
+            lambda: operators._create_project_data(
+                bpy.context,
+                sync_ui=False,
+                face_region_mask=np.ones(len(target.data.polygons), dtype=np.bool_),
+            ),
         )
         _timed(
             results,
