@@ -1229,6 +1229,44 @@ def back_to_paint(context: Any, project: Any) -> bool:
     return select_paint_key(context, project, index=int(project.active_angle_index))
 
 
+def ensure_paint_surface(context: Any | None = None) -> bool:
+    """Return Studio Image Editors to the authoring Paint surface.
+
+    Blender resets ``SpaceImage.ui_mode`` to ``VIEW`` whenever the active
+    ``image_paint.canvas`` is cleared.  The pixel upload path restores the mode
+    around its own detach, but a global Undo/Redo can still strand the editor
+    on the read-only View surface.  Quick SDF Paint owns that surface while a
+    session is active, so put it back unless the export review is showing a
+    heatmap on purpose.
+    """
+
+    context = context or bpy.context
+    session = active_session(context)
+    if session is None or bool(getattr(session, "export_review_active", False)):
+        return False
+    window = find_window(session.window_pointer) or getattr(context, "window", None)
+    screen = getattr(window, "screen", None)
+    if screen is None:
+        return False
+    restored = False
+    for area in screen.areas:
+        if area.type != "IMAGE_EDITOR":
+            continue
+        space = area.spaces.active
+        if hasattr(space, "ui_mode"):
+            if str(space.ui_mode) != "PAINT":
+                space.ui_mode = "PAINT"
+                restored = True
+        elif hasattr(space, "mode"):
+            if str(space.mode) != "PAINT":
+                space.mode = "PAINT"
+                restored = True
+        else:
+            continue
+        area.tag_redraw()
+    return restored
+
+
 def reconcile_view_state(context: Any | None = None) -> bool:
     """Re-resolve transient key IDs after Undo/Redo or key list edits."""
 
@@ -3221,6 +3259,7 @@ def _undo_post(_unused: Any) -> None:
     elif _SESSION is not None:
         try:
             reconcile_view_state(bpy.context)
+            ensure_paint_surface(bpy.context)
             project = resolve_session_project(_SESSION)
             if project is not None:
                 from .operators import arm_undo_fence
@@ -3297,6 +3336,7 @@ __all__ = [
     "enter_studio", "exit_studio", "open_or_switch_studio",
     "find_studio_workspace", "is_studio_active", "leave_export_adjustment_review",
     "TIMELINE_SPACE_TYPE",
+    "ensure_paint_surface",
     "reconcile_view_state", "register_studio", "show_export_adjustment_review",
     "finish_provisional_stroke", "prepare_stroke_brush", "promote_provisional_after_stroke",
     "apply_provisional_history", "provisional_history_state",

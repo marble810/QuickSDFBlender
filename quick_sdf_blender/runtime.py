@@ -798,6 +798,32 @@ def copy_image_pixels(
         pass
 
 
+def _image_editor_paint_spaces() -> list[Any]:
+    """Return the Image Editor spaces that currently show the Paint surface.
+
+    Clearing ``image_paint.canvas`` makes Blender reset ``SpaceImage.ui_mode``
+    to ``VIEW`` and re-attaching the canvas keeps that reset.  Callers snapshot
+    the spaces first so the authoring surface can be put back afterwards.
+    """
+
+    spaces: list[Any] = []
+    window_manager = getattr(bpy.context, "window_manager", None)
+    for window in getattr(window_manager, "windows", ()):
+        screen = getattr(window, "screen", None)
+        if screen is None:
+            continue
+        for area in screen.areas:
+            if area.type != "IMAGE_EDITOR":
+                continue
+            space = area.spaces.active
+            mode = getattr(space, "ui_mode", None)
+            if mode is None:
+                mode = getattr(space, "mode", None)
+            if str(mode) == "PAINT":
+                spaces.append(space)
+    return spaces
+
+
 def _write_blender_flat(image: bpy.types.Image, pixels: Any) -> None:
     """Commit one contiguous bottom-up flat float32 RGBA buffer."""
 
@@ -814,12 +840,19 @@ def _write_blender_flat(image: bpy.types.Image, pixels: Any) -> None:
     # Blender keeps a separate projection-paint buffer for the active canvas.
     # Python pixel writes to a packed canvas can otherwise be overwritten by
     # that stale buffer. Detach only for the duration of this atomic write.
-    detached = []
+    targets = []
     for scene in bpy.data.scenes:
         image_paint = getattr(getattr(scene, "tool_settings", None), "image_paint", None)
         if image_paint is not None and getattr(image_paint, "canvas", None) == image:
-            detached.append(image_paint)
-            image_paint.canvas = None
+            targets.append(image_paint)
+    # Uploading a whole canvas is the normal Quick SDF Undo/Redo step.  Clearing
+    # the canvas drops every Paint Image Editor back to the View surface, so
+    # remember the mode before detaching and restore it after the write.
+    paint_spaces = _image_editor_paint_spaces() if targets else []
+    detached = []
+    for image_paint in targets:
+        detached.append(image_paint)
+        image_paint.canvas = None
     try:
         image.pixels.foreach_set(flat)
         image[IMAGE_REVISION_KEY] = int(image.get(IMAGE_REVISION_KEY, 0)) + 1
@@ -838,6 +871,16 @@ def _write_blender_flat(image: bpy.types.Image, pixels: Any) -> None:
     finally:
         for image_paint in detached:
             image_paint.canvas = image
+        for space in paint_spaces:
+            try:
+                if hasattr(space, "ui_mode"):
+                    if str(space.ui_mode) != "PAINT":
+                        space.ui_mode = "PAINT"
+                elif hasattr(space, "mode"):
+                    if str(space.mode) != "PAINT":
+                        space.mode = "PAINT"
+            except (AttributeError, ReferenceError, RuntimeError):
+                pass
 
 
 def _write_blender_rows(image: bpy.types.Image, blender_rows: Any) -> None:
