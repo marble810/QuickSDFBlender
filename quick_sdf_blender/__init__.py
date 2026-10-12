@@ -15,9 +15,9 @@ bl_info = {
 
 
 def _modules():
-    from . import boundary, model, operators, preview, runtime, timeline, ui
+    from . import boundary, lighting_indicator, model, operators, preview, runtime, timeline, ui, viewport_lighting
 
-    return (model, runtime, operators, boundary, preview, timeline, ui)
+    return (model, runtime, operators, boundary, preview, timeline, ui, viewport_lighting, lighting_indicator)
 
 
 def register():
@@ -39,6 +39,8 @@ def register():
         i18n.register_translations()
         studio.register_studio()
         timeline.register_timeline()
+        from . import viewport_lighting
+        viewport_lighting.register_overlay()
         tools.register_tools()
         ui.register_keymaps()
     except Exception:
@@ -51,7 +53,10 @@ def register():
         operators.shutdown_bake_job(message="Base update cancelled during add-on cleanup")
         operators.shutdown_export_job(message="Export cancelled during add-on cleanup")
 
+        from . import viewport_lighting
+
         for cleanup in (
+            viewport_lighting.unregister_overlay,
             ui.unregister_keymaps,
             studio.unregister_studio,
             tools.unregister_tools,
@@ -83,6 +88,8 @@ def unregister():
     ui.unregister_keymaps()
     studio.unregister_studio()
     tools.unregister_tools()
+    from . import viewport_lighting
+    viewport_lighting.unregister_overlay()
     timeline.unregister_timeline()
     live_preview.cleanup()
     i18n.unregister_translations()

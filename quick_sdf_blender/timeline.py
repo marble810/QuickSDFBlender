@@ -51,7 +51,7 @@ _ADDON_KEYMAPS: list[tuple[Any, Any]] = []
 _SCRUB_PREVIEW_INTERVAL = 1.0 / 30.0
 _GEOMETRY_CACHE: OrderedDict[tuple[Any, ...], TimelineGeometry] = OrderedDict()
 _RECT_BATCH_CACHE: OrderedDict[tuple[float, float, float, float], Any] = OrderedDict()
-_IMAGE_BATCH_CACHE: OrderedDict[tuple[float, float, float, float], Any] = OrderedDict()
+_IMAGE_BATCH_CACHE: OrderedDict[tuple[float, ...], Any] = OrderedDict()
 _GEOMETRY_CACHE_LIMIT = 64
 _BATCH_CACHE_LIMIT = 256
 _AUTHORING_ANGLE_MIN = 0.0
@@ -249,6 +249,7 @@ def _draw_thumbnail(
     uv_bbox: tuple[float, float, float, float],
     project: Any | None = None,
     active_image: Any | None = None,
+    scale: float = 1.0,
 ) -> bool:
     try:
         global _IMAGE_SHADER
@@ -271,13 +272,14 @@ def _draw_thumbnail(
                 pass
         if _IMAGE_SHADER is None:
             _IMAGE_SHADER = gpu.shader.from_builtin("IMAGE_SCENE_LINEAR_TO_REC709_SRGB")
+        # Reserve the bottom strip for the progress label, not the top.
         positions = (
-            (rect.x0 + 2.0, rect.y0 + 2.0),
-            (rect.x1 - 2.0, rect.y0 + 2.0),
-            (rect.x1 - 2.0, rect.y1 - 16.0),
-            (rect.x0 + 2.0, rect.y1 - 16.0),
+            (rect.x0 + 2.0 * scale, rect.y0 + 16.0 * scale),
+            (rect.x1 - 2.0 * scale, rect.y0 + 16.0 * scale),
+            (rect.x1 - 2.0 * scale, rect.y1 - 2.0 * scale),
+            (rect.x0 + 2.0 * scale, rect.y1 - 2.0 * scale),
         )
-        key = (rect.x0, rect.y0, rect.x1, rect.y1)
+        key = (rect.x0, rect.y0, rect.x1, rect.y1, scale)
         batch = _IMAGE_BATCH_CACHE.get(key)
         if batch is None:
             tex_coords = ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))
@@ -292,6 +294,7 @@ def _draw_thumbnail(
                 _IMAGE_BATCH_CACHE.popitem(last=False)
         else:
             _IMAGE_BATCH_CACHE.move_to_end(key)
+        _IMAGE_SHADER.bind()
         _IMAGE_SHADER.uniform_sampler("image", texture)
         batch.draw(_IMAGE_SHADER)
         return True
@@ -430,7 +433,7 @@ def _draw_timeline() -> None:
             if image is None or not _draw_thumbnail(
                 image, rect, uv_bbox, project, active_image
             ):
-                _rect(Rect(rect.x0 + 2, rect.y0 + 2, rect.x1 - 2, rect.y1 - 16), (0.18, 0.19, 0.21, 1.0))
+                _rect(Rect(rect.x0 + 2, rect.y0 + 16, rect.x1 - 2, rect.y1 - 2), (0.18, 0.19, 0.21, 1.0))
             angle = float(getattr(item, "angle", 0.0))
             _text(_format_progress(angle), rect.x0 + 4.0, rect.y0 + 3.0, size=10)
             if collection_index == highlighted:
@@ -759,7 +762,7 @@ def tag_timeline_redraw() -> None:
     wm = getattr(bpy.context, "window_manager", None)
     for window in getattr(wm, "windows", ()):
         for area in window.screen.areas:
-            if area.type == TIMELINE_SPACE_TYPE:
+            if area.type in {TIMELINE_SPACE_TYPE, "VIEW_3D"}:
                 area.tag_redraw()
 
 

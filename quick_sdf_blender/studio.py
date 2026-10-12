@@ -22,7 +22,7 @@ from bpy.app.handlers import persistent
 
 WORKSPACE_PROJECT_TAG = "quick_sdf_studio_project_uuid"
 WORKSPACE_VERSION_TAG = "quick_sdf_studio_layout_version"
-WORKSPACE_LAYOUT_VERSION = 2
+WORKSPACE_LAYOUT_VERSION = 3
 WORKSPACE_BASENAME = "Quick SDF Paint"
 TIMELINE_HEIGHT = 104
 TIMELINE_SPACE_TYPE = "NODE_EDITOR"
@@ -1569,12 +1569,8 @@ def _operator_succeeded(result: Any) -> bool:
 
 def _valid_studio_layout(workspace: Any) -> bool:
     return any(
-        sum(area.type == kind for area in screen.areas) >= 1
-        for screen in workspace.screens
-        for kind in ("VIEW_3D",)
-    ) and any(
-        any(area.type == "IMAGE_EDITOR" for area in screen.areas)
-        and any(area.type == TIMELINE_SPACE_TYPE for area in screen.areas)
+        any(area.type == "VIEW_3D" for area in screen.areas)
+        and any(area.type == "IMAGE_EDITOR" for area in screen.areas)
         for screen in workspace.screens
     )
 
@@ -1720,7 +1716,15 @@ def _ensure_session_timeline_host(session: StudioSession | None = None) -> bool:
 
 
 def configure_workspace(context: Any, window: Any) -> tuple[Any, Any, Any]:
-    """Replace the cloned screen with Image/3D over a compact timeline."""
+    """Create Canvas/3D; lighting controls live inside the 3D viewport."""
+
+    base = _collapse_screen(context, window)
+    _split_area(context, window, base, "VERTICAL", 0.5)
+    return _configure_area_types(window)
+
+
+def _configure_legacy_workspace(context: Any, window: Any) -> tuple[Any, Any, Any]:
+    """Retained standalone timeline layout, no longer the default."""
 
     base = _collapse_screen(context, window)
     factor = max(0.08, min(0.24, TIMELINE_HEIGHT / max(1.0, float(base.height))))
@@ -2330,6 +2334,63 @@ def _join_one_area(context: Any, window: Any) -> bool:
 
 
 def _configure_area_types(window: Any) -> tuple[Any, Any, Any]:
+    areas = sorted(window.screen.areas, key=lambda area: area.x)
+    if len(areas) != 2:
+        raise StudioError("Quick SDF Paint did not produce the expected two areas")
+    image_area, view_area = areas
+    image_area.type = "IMAGE_EDITOR"
+    view_area.type = "VIEW_3D"
+    image_space = image_area.spaces.active
+    if hasattr(image_space, "ui_mode"):
+        image_space.ui_mode = "PAINT"
+    elif hasattr(image_space, "mode"):
+        image_space.mode = "PAINT"
+    for space in (image_space, view_area.spaces.active):
+        if hasattr(space, "show_region_tool_header"):
+            space.show_region_tool_header = True
+        if hasattr(space, "show_region_header"):
+            space.show_region_header = True
+    view_space = view_area.spaces.active
+    # The asset shelf is not editable until the new paint region is initialized.
+    view_space.show_gizmo = True
+    if hasattr(view_space, "shading"):
+        view_space.shading.type = "MATERIAL"
+    return view_area, image_area, None
+
+
+_ASSET_SHELF_HIDE_RETRIES = 0
+
+
+def _hide_studio_asset_shelf() -> float | None:
+    """Hide the paint shelf only after Blender initializes its active shelf."""
+
+    global _ASSET_SHELF_HIDE_RETRIES
+    session = _SESSION
+    window = find_window(session.window_pointer) if session is not None else None
+    if window is None or window.workspace.name != session.workspace_name:
+        return None
+    view_area, _image_area, _timeline_area = studio_areas(window)
+    if view_area is None:
+        return None
+    region = _window_region(view_area)
+    if region is None:
+        return None
+    _ASSET_SHELF_HIDE_RETRIES -= 1
+    try:
+        with bpy.context.temp_override(window=window, area=view_area, region=region):
+            space = view_area.spaces.active
+            if space.is_property_readonly("show_region_asset_shelf"):
+                return 0.05 if _ASSET_SHELF_HIDE_RETRIES > 0 else None
+            if space.show_region_asset_shelf:
+                bpy.ops.screen.region_toggle(region_type="ASSET_SHELF")
+            view_area.tag_redraw()
+    except (AttributeError, ReferenceError, RuntimeError):
+        # Cosmetic setup must never abort project creation.
+        return 0.05 if _ASSET_SHELF_HIDE_RETRIES > 0 else None
+    return None
+
+
+def _configure_legacy_area_types(window: Any) -> tuple[Any, Any, Any]:
     areas = list(window.screen.areas)
     if len(areas) != 3:
         raise StudioError("Quick SDF Paint did not produce the expected three areas")
@@ -2459,7 +2520,7 @@ def _rollback_pending(error: BaseException | None = None) -> None:
 def _continue_enter() -> float | None:
     """Advance workspace topology by one event-loop-safe operation."""
 
-    global _PENDING, _SESSION
+    global _PENDING, _SESSION, _ASSET_SHELF_HIDE_RETRIES
     pending = _PENDING
     if pending is None:
         return None
@@ -2486,24 +2547,21 @@ def _continue_enter() -> float | None:
             if len(window.screen.areas) > 1:
                 _join_one_area(context, window)
                 return 0.03
-            pending.state = "SPLIT_BOTTOM"
-        if pending.state == "SPLIT_BOTTOM":
+            pending.state = "SPLIT_VIEW"
+        if pending.state == "SPLIT_VIEW":
             base = window.screen.areas[0]
-            factor = max(0.08, min(0.24, TIMELINE_HEIGHT / max(1.0, float(base.height))))
-            _split_area(context, window, base, "HORIZONTAL", factor)
-            pending.state = "SPLIT_TOP"
-            return 0.03
-        if pending.state == "SPLIT_TOP":
-            if len(window.screen.areas) < 2:
-                return 0.03
-            top = max(window.screen.areas, key=lambda area: area.y + area.height * 0.5)
-            _split_area(context, window, top, "VERTICAL", 0.5)
+            _split_area(context, window, base, "VERTICAL", 0.5)
             pending.state = "FINISH"
             return 0.03
-        if pending.state == "FINISH":
-            if len(window.screen.areas) < 3:
+        if pending.state in {"FINISH", "RESUME"}:
+            if len(window.screen.areas) < 2:
                 return 0.03
-            view_area, image_area, _timeline_area = _configure_area_types(window)
+            if pending.state == "RESUME":
+                view_area, image_area, _timeline_area = studio_areas(window)
+                if view_area is None or image_area is None:
+                    raise StudioError("The preserved Studio layout is incomplete")
+            else:
+                view_area, image_area, _timeline_area = _configure_area_types(window)
             obj = project.target_object
             _set_active_object(context, obj)
             scene = bpy.data.scenes.get(session.scene_name) or context.scene
@@ -2538,7 +2596,8 @@ def _continue_enter() -> float | None:
             from .tools import activate_tools
 
             activate_tools(context, window=window)
-            _frame_studio_content(context, window, view_area, image_area)
+            if pending.state != "RESUME":
+                _frame_studio_content(context, window, view_area, image_area)
             _apply_projection_settings(scene, session, window, obj)
             if pending.manage_preview:
                 _assign_preview(project, image)
@@ -2546,6 +2605,10 @@ def _continue_enter() -> float | None:
             if str(project.diagnostic_message).startswith("Could not open Quick SDF Paint:"):
                 project.diagnostic_message = ""
             _SESSION = session
+            if pending.state != "RESUME":
+                _ASSET_SHELF_HIDE_RETRIES = 20
+                if not bpy.app.timers.is_registered(_hide_studio_asset_shelf):
+                    bpy.app.timers.register(_hide_studio_asset_shelf, first_interval=0.05)
             _PENDING = None
             from .operators import arm_undo_fence
 
@@ -2855,6 +2918,7 @@ def enter_studio(
     *,
     sync_canvas_fn: Callable[[Any, Any], Any] | None = None,
     manage_preview: bool = True,
+    preserve_layout: bool = False,
 ) -> StudioSession:
     """Atomically enter Studio and publish the singleton only after success."""
 
@@ -2898,10 +2962,10 @@ def enter_studio(
             session.workspace_created = True
         else:
             window.workspace = workspace
-        # Reused Studio workspaces may have been split/joined by the artist.
-        # Every new session rebuilds the default canvas/view/timeline layout.
+        # Normal opens rebuild; the opt-in development reload preserves layout.
         session.workspace_name = workspace.name
-        _PENDING = _PendingEnter(session=session, manage_preview=manage_preview, state="JOIN")
+        state = "RESUME" if preserve_layout and not session.workspace_created and _valid_studio_layout(workspace) else "JOIN"
+        _PENDING = _PendingEnter(session=session, manage_preview=manage_preview, state=state)
         project.warning_message = "Opening Quick SDF Paint…"
         if not bpy.app.timers.is_registered(_continue_enter):
             bpy.app.timers.register(_continue_enter, first_interval=0.01)
@@ -3265,6 +3329,8 @@ def register_studio() -> None:
 def unregister_studio() -> None:
     global _HANDLERS_REGISTERED, _SESSION, _PENDING, _SWITCH_PENDING
     _SWITCH_PENDING = None
+    if bpy.app.timers.is_registered(_hide_studio_asset_shelf):
+        bpy.app.timers.unregister(_hide_studio_asset_shelf)
     if bpy.app.timers.is_registered(_continue_switch):
         bpy.app.timers.unregister(_continue_switch)
     if bpy.app.timers.is_registered(_continue_enter):

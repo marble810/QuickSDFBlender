@@ -18,6 +18,17 @@ Pedro F. Felzenszwalb and Daniel P. Huttenlocher.
 Quick SDF's adaptations and modifications are distributed under
 GPL-3.0-or-later. The complete GPL-3.0-or-later text is included in `LICENSE`.
 
+## bl_ui_widgets
+
+`quick_sdf_blender/bl_ui_widgets` contains a minimal fork of Jayanam's
+`BL_UI_Widget` and `BL_UI_Slider`, version 0.6.4.2, commit
+`37b9313c278dba208ec95f954b48ff536eee8afd`.
+
+- Author: Jayanam
+- Upstream: https://github.com/jayanam/bl_ui_widgets
+- License: GNU GPL v3 (included in `bl_ui_widgets/LICENSE.txt`)
+- Local adaptations are recorded in `bl_ui_widgets/README.md`.
+
 ## NumPy
 
 Quick SDF uses the NumPy installation provided by a supported Blender version.

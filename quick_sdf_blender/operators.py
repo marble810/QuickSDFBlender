@@ -20,7 +20,7 @@ from mathutils import Vector
 
 from . import runtime
 from .history import History
-from .model import LOCKED_KEY_ANGLES, SIDE_LIGHT_KEY_ANGLE
+from .model import DEFAULT_KEY_ANGLES, SIDE_LIGHT_KEY_ANGLE
 
 
 _HISTORIES: dict[str, History] = {}
@@ -45,7 +45,7 @@ def _side_light_index(angles) -> int:
 
 
 def _is_locked_angle(angle: float) -> bool:
-    return any(abs(float(angle) - value) < 1.0e-5 for value in LOCKED_KEY_ANGLES)
+    return any(abs(float(angle) - value) < 1.0e-5 for value in DEFAULT_KEY_ANGLES)
 
 
 def _purge_history_orphans(project_uuid: str = "") -> None:
@@ -1315,10 +1315,50 @@ def _assign_angle_layers(project, item, display) -> None:
     item.display_image_name = display.name
 
 
+def _interpolated_key_layers(project, angle, side):
+    """Snapshot neighboring authored displays, without rebaking any existing key."""
+    import numpy as np
+
+    from .native import interpolate_binary_masks
+    from .residency import ensure_loaded
+
+    keys = sorted((item for item in project.angles if str(item.side) == side),
+                  key=lambda item: float(item.angle))
+    lower = max((item for item in keys if float(item.angle) < angle),
+                key=lambda item: float(item.angle), default=None)
+    upper = min((item for item in keys if float(item.angle) > angle),
+                key=lambda item: float(item.angle), default=None)
+    if lower is None or upper is None:
+        raise ValueError("A new key must be between two existing keys on the same side")
+    images = (runtime.resolve_display_image(project, lower),
+              runtime.resolve_display_image(project, upper))
+    if any(image is None for image in images):
+        raise ValueError("A neighboring painted key image is missing")
+    first, second = (runtime.image_mask(ensure_loaded(image)) for image in images)
+    expected_shape = (int(project.resolution), int(project.resolution))
+    if first.shape != expected_shape or second.shape != expected_shape:
+        raise ValueError("Neighboring key images must match the project resolution")
+    factor = (angle - float(lower.angle)) / (float(upper.angle) - float(lower.angle))
+    # Binary pixel LERP would switch the whole differing area at factor 0.5.
+    # The existing exact-SDF blend instead interpolates the painted contours.
+    display = interpolate_binary_masks(first, second, factor)
+    base = interpolate_binary_masks(runtime.base_mask(lower), runtime.base_mask(upper), factor)
+    generated = base
+    if project.boundary_tracks:
+        from .boundary import evaluate_boundary_mask
+
+        generated = evaluate_boundary_mask(project, angle, side, base)
+    # Native paint can be visible in Display before Coverage is materialized.
+    # Preserve the exact interpolated snapshot, including those differences.
+    coverage = np.ascontiguousarray(runtime.coverage_mask(lower) | runtime.coverage_mask(upper)
+                                    | (display != generated), dtype=np.bool_)
+    return display, base, coverage
+
+
 class QUICKSDF_OT_key_add(bpy.types.Operator):
     bl_idname = "quicksdf.key_add"
     bl_label = "Add Angle Key"
-    bl_description = "Add a paint key at a chosen angle and initialize it from the evaluated pose"
+    bl_description = "Add a paint key using SDF LERP between the neighboring painted keys"
     bl_options = {"REGISTER", "UNDO"}
 
     angle: FloatProperty(name="Angle", default=-1.0, min=-1.0, max=90.0)
@@ -1330,7 +1370,7 @@ class QUICKSDF_OT_key_add(bpy.types.Operator):
             return {"CANCELLED"}
         if self.angle < 0.0:
             candidate = max(0.0, min(90.0, float(project.seek_angle)))
-            side = str(project.active_side or project.authoring_side)
+            side = str(project.active_side if project.symmetry_mode == "INDEPENDENT" else project.authoring_side)
             angles = sorted(
                 float(item.angle)
                 for item in project.angles
@@ -1346,17 +1386,18 @@ class QUICKSDF_OT_key_add(bpy.types.Operator):
                 elif position > 0:
                     candidate = 0.5 * (angles[position - 1] + angles[position])
             self.angle = candidate
-        return context.window_manager.invoke_props_dialog(self, width=260)
+        return context.window_manager.invoke_props_dialog(self, width=360)
 
     def draw(self, _context):
         self.layout.prop(self, "angle", text="Angle")
+        self.layout.label(text="Copy current key" if self.duplicate else "Initialize from neighboring keys (SDF LERP)")
 
     def execute(self, context):
         project = _require_project(self, context)
         if project is None:
             return {"CANCELLED"}
         _discard_provisional(context, project)
-        side = str(project.active_side or project.authoring_side)
+        side = str(project.active_side if project.symmetry_mode == "INDEPENDENT" else project.authoring_side)
         side_count = sum(1 for item in project.angles if str(item.side) == side)
         from .model import MAX_KEYS_PER_SIDE
 
@@ -1368,9 +1409,21 @@ class QUICKSDF_OT_key_add(bpy.types.Operator):
         if any(str(item.side) == side and abs(float(item.angle) - angle) < 1.0e-4 for item in project.angles):
             self.report({"ERROR"}, "An angle key already exists here")
             return {"CANCELLED"}
-        clear_histories(str(project.uuid))
         source = runtime.active_angle(project)
         source_uuid = str(getattr(source, "uuid", ""))
+        if self.duplicate and not source_uuid:
+            self.report({"ERROR"}, "Select an existing key to duplicate first")
+            return {"CANCELLED"}
+        # Calculate before inserting a key or clearing histories, so a missing
+        # source image / failed interpolation leaves the project untouched.
+        layers = None
+        if not self.duplicate:
+            try:
+                layers = _interpolated_key_layers(project, angle, side)
+            except Exception as exc:
+                self.report({"ERROR"}, str(exc))
+                return {"CANCELLED"}
+        clear_histories(str(project.uuid))
         item = project.angles.add()
         item.uuid = runtime.new_uuid()
         new_uuid = str(item.uuid)
@@ -1398,18 +1451,16 @@ class QUICKSDF_OT_key_add(bpy.types.Operator):
                 runtime.copy_angle_bitplanes(source, item)
                 item.is_manual = True
             else:
-                import numpy as np
-
-                resolution = int(project.resolution)
-                runtime.set_base_mask(
-                    item, np.ones((resolution, resolution), dtype=np.bool_)
-                )
-                runtime.set_coverage_mask(
-                    item, np.zeros((resolution, resolution), dtype=np.bool_)
-                )
-                _bake_project(context, project)
+                interpolated_display, base, coverage = layers
+                runtime.set_base_mask(item, base)
+                runtime.set_coverage_mask(item, coverage)
+                runtime.write_image_gray8(display, interpolated_display.astype("uint8") * 255)
+                item.is_manual = True
+                item.is_generated = False
+                item.dirty = True
             _sort_angle_items(project)
             _select_angle_uuid(context, project, new_uuid)
+            project.dirty = True
         except Exception as exc:
             if display.users == 0:
                 bpy.data.images.remove(display)
@@ -1455,7 +1506,7 @@ class QUICKSDF_OT_key_move(bpy.types.Operator):
         if item is None or _is_locked_angle(float(item.angle)):
             self.report(
                 {"ERROR"},
-                "The 0 and 90 degree endpoints are locked, as is the 45 degree Side Light key",
+                "The nine default angle keys cannot be moved or retimed",
             )
             return {"CANCELLED"}
         if any(
@@ -1483,6 +1534,21 @@ class QUICKSDF_OT_key_delete(bpy.types.Operator):
 
     uuid: StringProperty(name="Key UUID", default="")
 
+    def invoke(self, context, _event):
+        project = _require_project(self, context)
+        if project is None:
+            return {"CANCELLED"}
+        item = next((value for value in project.angles if value.uuid == self.uuid), runtime.active_angle(project))
+        if item is None or _is_locked_angle(float(item.angle)):
+            self.report({"ERROR"}, "The nine default angle keys cannot be deleted")
+            return {"CANCELLED"}
+        self.uuid = str(item.uuid)
+        return context.window_manager.invoke_props_dialog(self, width=360)
+
+    def draw(self, _context):
+        self.layout.label(text="Delete the selected angle key?", icon="ERROR")
+        self.layout.label(text="Quick SDF paint undo history will be cleared.")
+
     def execute(self, context):
         project = _require_project(self, context)
         if project is None:
@@ -1492,7 +1558,7 @@ class QUICKSDF_OT_key_delete(bpy.types.Operator):
         if item is None or _is_locked_angle(float(item.angle)):
             self.report(
                 {"ERROR"},
-                "The 0 and 90 degree endpoints cannot be deleted, and the 45 degree Side Light key is also locked",
+                "The nine default angle keys cannot be deleted",
             )
             return {"CANCELLED"}
         clear_histories(str(project.uuid))

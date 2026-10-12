@@ -103,6 +103,10 @@ Quick SDF Paintが出力するのは「顔影スレッショルドマップ」�
 
 ## Development
 
+Live development sync (without running the release gate):
+[`scripts/DEV_SYNC.md`](scripts/DEV_SYNC.md). A standard-library watcher syncs
+Python/UI changes to the installed Blender extension and requests safe reloads.
+
 ```powershell
 # Blender 5.1（既定）
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_extension.ps1

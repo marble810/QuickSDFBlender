@@ -304,7 +304,10 @@ def thumbnail_texture(image: Any, uv_bbox: Any) -> Any:
     # GPUTexture consumes rows bottom-up.  Keep the cached CPU image top-down
     # for tests and other UI clients and only flip the tiny upload buffer.
     rgba = np.flip(thumbnail_rgba8(image, bbox), axis=0).copy()
-    buffer = gpu.types.Buffer("UBYTE", rgba.shape, rgba.ravel())
+    # Blender 5.1 GPUTexture accepts FLOAT upload buffers even for RGBA8.
+    # Convert only the tiny derivative; GPU storage remains four bytes/pixel.
+    upload = rgba.astype(np.float32) / np.float32(255.0)
+    buffer = gpu.types.Buffer("FLOAT", upload.shape, upload.ravel())
     texture = gpu.types.GPUTexture(
         (THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT), format="RGBA8", data=buffer
     )
