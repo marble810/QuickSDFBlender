@@ -107,6 +107,68 @@ def create_face_region_attribute(project: Any, obj: Any, face_mask: Any) -> Any:
     return attribute
 
 
+def migrate_legacy_face_region(context: Any, project: Any) -> bool:
+    """Recover a pre-0.9 project's explicitly stored material surface.
+
+    Never infer faces from names, and never repair a damaged modern Face Area.
+    Only structural region data is added; painted masks and angles stay intact.
+    """
+
+    if (
+        str(project.face_region_attribute_name)
+        or int(project.face_region_revision) != 0
+        or int(project.face_region_face_count) != 0
+        or int(project.face_region_uv_revision) != 0
+        or FACE_REGION_UV_BITPLANE_KEY in project
+        or "material_slot_index" not in project
+    ):
+        return False
+    import numpy as np
+
+    obj = project.target_object
+    if obj is None or obj.type != "MESH" or obj.library or obj.data.library:
+        raise ValueError("The legacy Face Area requires a local mesh")
+    if obj.mode == "EDIT":
+        raise ValueError("Leave Edit Mode before upgrading the legacy Face Area")
+    slot = project.get("material_slot_index")
+    if not isinstance(slot, int) or not 0 <= slot < len(obj.material_slots):
+        raise ValueError("The legacy Face Area material slot is unavailable")
+    if obj.data.uv_layers.get(str(project.uv_map_name)) is None:
+        raise ValueError("The Quick SDF UV map is unavailable")
+    values = np.fromiter(
+        (int(polygon.material_index) == slot for polygon in obj.data.polygons),
+        dtype=np.bool_,
+        count=len(obj.data.polygons),
+    )
+    name = f"{FACE_REGION_ATTRIBUTE_PREFIX}{str(project.uuid).replace('-', '')}"
+    if obj.data.attributes.get(name) is not None:
+        raise ValueError("The legacy Face Area conflicts with an existing mesh attribute")
+    attribute = create_face_region_attribute(project, obj, values)
+    try:
+        from .operators import _extract_evaluated_bake_input
+        from .bake import rasterize_uv_normals
+
+        triangle_uvs, corner_normals, _centers = _extract_evaluated_bake_input(context, project)
+        _normals, occupancy = rasterize_uv_normals(
+            triangle_uvs, corner_normals, int(project.resolution), int(project.resolution)
+        )
+        if not np.any(occupancy):
+            raise ValueError("The legacy Face Area has no usable UV coverage")
+        set_face_region_uv_mask(project, occupancy)
+    except Exception:
+        obj.data.attributes.remove(attribute)
+        obj.data.update()
+        project.face_region_attribute_name = ""
+        project.face_region_revision = 0
+        project.face_region_face_count = 0
+        project.face_region_uv_revision = 0
+        if FACE_REGION_UV_BITPLANE_KEY in project:
+            del project[FACE_REGION_UV_BITPLANE_KEY]
+        _BITPLANE_CACHE.invalidate(f"{project.uuid}:FACE_REGION_UV")
+        raise
+    return True
+
+
 def remove_face_region_attribute(project: Any) -> bool:
     obj = getattr(project, "target_object", None)
     attribute = _face_region_attribute(project, obj)
