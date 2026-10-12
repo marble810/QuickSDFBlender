@@ -107,6 +107,68 @@ def create_face_region_attribute(project: Any, obj: Any, face_mask: Any) -> Any:
     return attribute
 
 
+def migrate_legacy_face_region(context: Any, project: Any) -> bool:
+    """Recover a pre-0.9 project's explicitly stored material surface.
+
+    Never infer faces from names, and never repair a damaged modern Face Area.
+    Only structural region data is added; painted masks and angles stay intact.
+    """
+
+    if (
+        str(project.face_region_attribute_name)
+        or int(project.face_region_revision) != 0
+        or int(project.face_region_face_count) != 0
+        or int(project.face_region_uv_revision) != 0
+        or FACE_REGION_UV_BITPLANE_KEY in project
+        or "material_slot_index" not in project
+    ):
+        return False
+    import numpy as np
+
+    obj = project.target_object
+    if obj is None or obj.type != "MESH" or obj.library or obj.data.library:
+        raise ValueError("The legacy Face Area requires a local mesh")
+    if obj.mode == "EDIT":
+        raise ValueError("Leave Edit Mode before upgrading the legacy Face Area")
+    slot = project.get("material_slot_index")
+    if not isinstance(slot, int) or not 0 <= slot < len(obj.material_slots):
+        raise ValueError("The legacy Face Area material slot is unavailable")
+    if obj.data.uv_layers.get(str(project.uv_map_name)) is None:
+        raise ValueError("The Quick SDF UV map is unavailable")
+    values = np.fromiter(
+        (int(polygon.material_index) == slot for polygon in obj.data.polygons),
+        dtype=np.bool_,
+        count=len(obj.data.polygons),
+    )
+    name = f"{FACE_REGION_ATTRIBUTE_PREFIX}{str(project.uuid).replace('-', '')}"
+    if obj.data.attributes.get(name) is not None:
+        raise ValueError("The legacy Face Area conflicts with an existing mesh attribute")
+    attribute = create_face_region_attribute(project, obj, values)
+    try:
+        from .operators import _extract_evaluated_bake_input
+        from .bake import rasterize_uv_normals
+
+        triangle_uvs, corner_normals, _centers = _extract_evaluated_bake_input(context, project)
+        _normals, occupancy = rasterize_uv_normals(
+            triangle_uvs, corner_normals, int(project.resolution), int(project.resolution)
+        )
+        if not np.any(occupancy):
+            raise ValueError("The legacy Face Area has no usable UV coverage")
+        set_face_region_uv_mask(project, occupancy)
+    except Exception:
+        obj.data.attributes.remove(attribute)
+        obj.data.update()
+        project.face_region_attribute_name = ""
+        project.face_region_revision = 0
+        project.face_region_face_count = 0
+        project.face_region_uv_revision = 0
+        if FACE_REGION_UV_BITPLANE_KEY in project:
+            del project[FACE_REGION_UV_BITPLANE_KEY]
+        _BITPLANE_CACHE.invalidate(f"{project.uuid}:FACE_REGION_UV")
+        raise
+    return True
+
+
 def remove_face_region_attribute(project: Any) -> bool:
     obj = getattr(project, "target_object", None)
     attribute = _face_region_attribute(project, obj)
@@ -798,6 +860,32 @@ def copy_image_pixels(
         pass
 
 
+def _image_editor_paint_spaces() -> list[Any]:
+    """Return the Image Editor spaces that currently show the Paint surface.
+
+    Clearing ``image_paint.canvas`` makes Blender reset ``SpaceImage.ui_mode``
+    to ``VIEW`` and re-attaching the canvas keeps that reset.  Callers snapshot
+    the spaces first so the authoring surface can be put back afterwards.
+    """
+
+    spaces: list[Any] = []
+    window_manager = getattr(bpy.context, "window_manager", None)
+    for window in getattr(window_manager, "windows", ()):
+        screen = getattr(window, "screen", None)
+        if screen is None:
+            continue
+        for area in screen.areas:
+            if area.type != "IMAGE_EDITOR":
+                continue
+            space = area.spaces.active
+            mode = getattr(space, "ui_mode", None)
+            if mode is None:
+                mode = getattr(space, "mode", None)
+            if str(mode) == "PAINT":
+                spaces.append(space)
+    return spaces
+
+
 def _write_blender_flat(image: bpy.types.Image, pixels: Any) -> None:
     """Commit one contiguous bottom-up flat float32 RGBA buffer."""
 
@@ -814,12 +902,19 @@ def _write_blender_flat(image: bpy.types.Image, pixels: Any) -> None:
     # Blender keeps a separate projection-paint buffer for the active canvas.
     # Python pixel writes to a packed canvas can otherwise be overwritten by
     # that stale buffer. Detach only for the duration of this atomic write.
-    detached = []
+    targets = []
     for scene in bpy.data.scenes:
         image_paint = getattr(getattr(scene, "tool_settings", None), "image_paint", None)
         if image_paint is not None and getattr(image_paint, "canvas", None) == image:
-            detached.append(image_paint)
-            image_paint.canvas = None
+            targets.append(image_paint)
+    # Uploading a whole canvas is the normal Quick SDF Undo/Redo step.  Clearing
+    # the canvas drops every Paint Image Editor back to the View surface, so
+    # remember the mode before detaching and restore it after the write.
+    paint_spaces = _image_editor_paint_spaces() if targets else []
+    detached = []
+    for image_paint in targets:
+        detached.append(image_paint)
+        image_paint.canvas = None
     try:
         image.pixels.foreach_set(flat)
         image[IMAGE_REVISION_KEY] = int(image.get(IMAGE_REVISION_KEY, 0)) + 1
@@ -838,6 +933,16 @@ def _write_blender_flat(image: bpy.types.Image, pixels: Any) -> None:
     finally:
         for image_paint in detached:
             image_paint.canvas = image
+        for space in paint_spaces:
+            try:
+                if hasattr(space, "ui_mode"):
+                    if str(space.ui_mode) != "PAINT":
+                        space.ui_mode = "PAINT"
+                elif hasattr(space, "mode"):
+                    if str(space.mode) != "PAINT":
+                        space.mode = "PAINT"
+            except (AttributeError, ReferenceError, RuntimeError):
+                pass
 
 
 def _write_blender_rows(image: bpy.types.Image, blender_rows: Any) -> None:

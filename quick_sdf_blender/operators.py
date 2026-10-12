@@ -1134,7 +1134,7 @@ class QUICKSDF_OT_studio_enter(bpy.types.Operator):
         try:
             from .studio import open_or_switch_studio
 
-            open_or_switch_studio(context, project)
+            open_or_switch_studio(context, project, reset_layout=True)
         except Exception as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
@@ -2293,14 +2293,15 @@ class QUICKSDF_OT_propagate_overrides(bpy.types.Operator):
                     coverage_before is not None and coverage_before.shape != before_gray.shape
                 ):
                     raise ValueError("The active paint image changed size during the stroke")
-                face_uv = runtime.face_region_uv_mask(project)
-                if face_uv.shape != source_gray.shape:
-                    raise ValueError("The Face Area UV mask changed size during the stroke")
-                outside = (source_gray != before_gray) & ~face_uv
-                if np.any(outside):
-                    source_gray = source_gray.copy()
-                    source_gray[outside] = before_gray[outside]
-                    runtime.write_image_gray8(source_image, source_gray)
+                if bool(getattr(project, "limit_paint_to_face_uv", True)):
+                    face_uv = runtime.face_region_uv_mask(project)
+                    if face_uv.shape != source_gray.shape:
+                        raise ValueError("The Face Area UV mask changed size during the stroke")
+                    outside = (source_gray != before_gray) & ~face_uv
+                    if np.any(outside):
+                        source_gray = source_gray.copy()
+                        source_gray[outside] = before_gray[outside]
+                        runtime.write_image_gray8(source_image, source_gray)
                 touched = source_gray != before_gray
                 if not np.any(touched):
                     interactive_no_change = True

@@ -221,8 +221,10 @@ def _preflight_studio_target(context: Any, project: Any) -> tuple[Any, int, Any,
     try:
         from . import runtime
 
+        runtime.migrate_legacy_face_region(context, project)
         runtime.face_region_mask(project, obj)
         runtime.face_region_material_slots(project)
+        runtime.face_region_uv_mask(project)
     except (ValueError, RuntimeError) as exc:
         raise StudioError(str(exc)) from exc
     uv_name = str(project.uv_map_name)
@@ -1229,6 +1231,44 @@ def back_to_paint(context: Any, project: Any) -> bool:
     return select_paint_key(context, project, index=int(project.active_angle_index))
 
 
+def ensure_paint_surface(context: Any | None = None) -> bool:
+    """Return Studio Image Editors to the authoring Paint surface.
+
+    Blender resets ``SpaceImage.ui_mode`` to ``VIEW`` whenever the active
+    ``image_paint.canvas`` is cleared.  The pixel upload path restores the mode
+    around its own detach, but a global Undo/Redo can still strand the editor
+    on the read-only View surface.  Quick SDF Paint owns that surface while a
+    session is active, so put it back unless the export review is showing a
+    heatmap on purpose.
+    """
+
+    context = context or bpy.context
+    session = active_session(context)
+    if session is None or bool(getattr(session, "export_review_active", False)):
+        return False
+    window = find_window(session.window_pointer) or getattr(context, "window", None)
+    screen = getattr(window, "screen", None)
+    if screen is None:
+        return False
+    restored = False
+    for area in screen.areas:
+        if area.type != "IMAGE_EDITOR":
+            continue
+        space = area.spaces.active
+        if hasattr(space, "ui_mode"):
+            if str(space.ui_mode) != "PAINT":
+                space.ui_mode = "PAINT"
+                restored = True
+        elif hasattr(space, "mode"):
+            if str(space.mode) != "PAINT":
+                space.mode = "PAINT"
+                restored = True
+        else:
+            continue
+        area.tag_redraw()
+    return restored
+
+
 def reconcile_view_state(context: Any | None = None) -> bool:
     """Re-resolve transient key IDs after Undo/Redo or key list edits."""
 
@@ -1549,7 +1589,6 @@ def find_studio_workspace(project_uuid: str) -> Any | None:
             has_current_name
             and workspace.get(WORKSPACE_PROJECT_TAG) == project_uuid
             and int(workspace.get(WORKSPACE_VERSION_TAG, 0)) == WORKSPACE_LAYOUT_VERSION
-            and _valid_studio_layout(workspace)
         ):
             return workspace
     return None
@@ -2425,6 +2464,7 @@ def _rollback_pending(error: BaseException | None = None) -> None:
     _restore_preview(project)
     if project is not None and error is not None:
         try:
+            project.warning_message = ""
             project.diagnostic_message = f"Could not open Quick SDF Paint: {error}"
         except (AttributeError, ReferenceError):
             pass
@@ -2474,6 +2514,12 @@ def _continue_enter() -> float | None:
         _rollback_pending(StudioError("The Quick SDF Paint workspace disappeared while opening"))
         return None
     window.workspace = workspace
+    # Workspace changes are applied by Blender's event loop. Never join or
+    # split the caller's screen while the requested Studio screen is pending.
+    if window.workspace.as_pointer() != workspace.as_pointer() or not any(
+        screen.as_pointer() == window.screen.as_pointer() for screen in workspace.screens
+    ):
+        return 0.03
     context = bpy.context
     try:
         if pending.state == "JOIN":
@@ -2537,6 +2583,8 @@ def _continue_enter() -> float | None:
             if pending.manage_preview:
                 _assign_preview(project, image)
             project.warning_message = ""
+            if str(project.diagnostic_message).startswith("Could not open Quick SDF Paint:"):
+                project.diagnostic_message = ""
             _SESSION = session
             _PENDING = None
             from .operators import arm_undo_fence
@@ -2811,8 +2859,9 @@ def open_or_switch_studio(
     project: Any,
     *,
     manage_preview: bool = True,
+    reset_layout: bool = False,
 ) -> StudioSession:
-    """Artist-facing entry point: open, refocus, or switch in one action."""
+    """Open or switch Studio; the Open button can discard layout edits."""
 
     global _PENDING
     target_uuid = str(project.uuid)
@@ -2824,6 +2873,9 @@ def open_or_switch_studio(
                 window.workspace = workspace
             return _PENDING.session
         _rollback_pending()
+    if reset_layout and _SESSION is not None:
+        _preflight_studio_target(context, project)
+        exit_studio(context, reason="reset-layout")
     if _SESSION is not None:
         session = _SESSION
         window = find_window(session.window_pointer)
@@ -2859,9 +2911,8 @@ def enter_studio(
         if _PENDING.session.project_uuid == project_uuid:
             return _PENDING.session
         raise StudioBusyError("Quick SDF Paint is already opening")
+    _preflight_studio_target(context, project)
     obj = project.target_object
-    if obj is None or getattr(obj, "type", "") != "MESH":
-        raise StudioError("The Quick SDF target must be a local mesh")
     window = context.window
     scene = context.scene
     previous_workspace = window.workspace
@@ -2885,12 +2936,12 @@ def enter_studio(
         if workspace is None:
             workspace = _duplicate_workspace(context, window, project)
             session.workspace_created = True
-            state = "JOIN"
         else:
             window.workspace = workspace
-            state = "FINISH"
+        # Reused Studio workspaces may have been split/joined by the artist.
+        # Every new session rebuilds the default canvas/view/timeline layout.
         session.workspace_name = workspace.name
-        _PENDING = _PendingEnter(session=session, manage_preview=manage_preview, state=state)
+        _PENDING = _PendingEnter(session=session, manage_preview=manage_preview, state="JOIN")
         project.warning_message = "Opening Quick SDF Paint…"
         if not bpy.app.timers.is_registered(_continue_enter):
             bpy.app.timers.register(_continue_enter, first_interval=0.01)
@@ -3221,6 +3272,7 @@ def _undo_post(_unused: Any) -> None:
     elif _SESSION is not None:
         try:
             reconcile_view_state(bpy.context)
+            ensure_paint_surface(bpy.context)
             project = resolve_session_project(_SESSION)
             if project is not None:
                 from .operators import arm_undo_fence
@@ -3297,6 +3349,7 @@ __all__ = [
     "enter_studio", "exit_studio", "open_or_switch_studio",
     "find_studio_workspace", "is_studio_active", "leave_export_adjustment_review",
     "TIMELINE_SPACE_TYPE",
+    "ensure_paint_surface",
     "reconcile_view_state", "register_studio", "show_export_adjustment_review",
     "finish_provisional_stroke", "prepare_stroke_brush", "promote_provisional_after_stroke",
     "apply_provisional_history", "provisional_history_state",

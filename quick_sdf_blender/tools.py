@@ -14,8 +14,12 @@ import bpy
 from bpy.types import WorkSpaceTool
 
 
+# Blender synchronizes texture-paint brush tool IDs between VIEW_3D and
+# IMAGE_EDITOR (wm_toolsystem.cc: toolsystem_brush_sync_for_texture_paint).
+# Both toolbar definitions must resolve the same ID, or each refresh requests
+# a tool that does not exist in the other editor and reports a warning.
 VIEW_TOOL_ID = "quicksdf.paint_view"
-IMAGE_TOOL_ID = "quicksdf.paint_image"
+IMAGE_TOOL_ID = VIEW_TOOL_ID
 _REGISTERED: list[type[WorkSpaceTool]] = []
 _ADDON_KEYMAPS: list[tuple[Any, Any]] = []
 
@@ -96,6 +100,7 @@ def _draw_tool_settings(context: Any, layout: Any, _tool: Any) -> None:
         row.prop(project, "preview_mode", text="")
     if not editing_aux_uuid and getattr(getattr(context, "area", None), "type", "") == "IMAGE_EDITOR":
         row.prop(project, "onion_enabled", text="Onion", toggle=True, icon="IMAGE_ALPHA")
+        row.prop(project, "limit_paint_to_face_uv", toggle=True)
 
     row.separator()
     preparing_auto_key = bool(

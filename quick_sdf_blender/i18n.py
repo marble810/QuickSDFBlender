@@ -53,6 +53,7 @@ TRANSLATIONS = {
         ("*", "Rebake Base"): "ベースを再ベイク",
         ("*", "Base needs update"): "ベースの更新が必要です",
         ("*", "Onion"): "オニオン表示",
+        ("*", "Limit to Face UV"): "顔UVの範囲に制限",
         ("*", "Add Key"): "キーを追加",
         ("*", "Duplicate Key"): "キーを複製",
         ("*", "Delete Key"): "キーを削除",

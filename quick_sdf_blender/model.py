@@ -362,6 +362,11 @@ class QSDFProject(PropertyGroup):
         name="Choose Mirror Layout", default=False, options={"HIDDEN"}
     )
     paint_value: IntProperty(name="Paint Value", default=0, min=0, max=1)
+    limit_paint_to_face_uv: BoolProperty(
+        name="Limit to Face UV",
+        description="Discard stroke changes outside the Face Area UV coverage; disable to paint padding around UV islands. 3D face isolation is unchanged",
+        default=True,
+    )
     seek_angle: FloatProperty(name="Light Angle", default=0.0, min=0.0, max=90.0)
     preview_enabled: BoolProperty(name="Preview Enabled", default=False)
     preview_mode: EnumProperty(

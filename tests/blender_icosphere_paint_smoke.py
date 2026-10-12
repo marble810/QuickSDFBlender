@@ -77,6 +77,13 @@ def _assert_active_tools() -> dict[str, str | None]:
     return tools
 
 
+def _image_editor_paint_mode() -> str:
+    area = next(
+        area for area in bpy.context.window.screen.areas if area.type == "IMAGE_EDITOR"
+    )
+    return str(getattr(area.spaces.active, "ui_mode", ""))
+
+
 def _graph_state(obj: bpy.types.Object, project, canvas) -> dict[str, object]:
     state = next(iter(project.preview_slots))
     material = obj.material_slots[int(state.slot_index)].material
@@ -515,6 +522,11 @@ def _tick() -> float | None:
                     _assert_graph_unchanged(
                         graph_reference, _graph_state(obj, project, canvas)
                     )
+                    # Undo/Redo uploads a whole canvas.  Clearing the active
+                    # image_paint canvas must not strand the Image Editor on
+                    # Blender's read-only View surface.
+                    assert _image_editor_paint_mode() == "PAINT"
+                    assert bpy.context.scene.tool_settings.image_paint.canvas == canvas
 
             median_seconds = float(statistics.median(timings))
             max_seconds = float(max(timings))

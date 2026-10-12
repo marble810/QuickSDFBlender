@@ -367,6 +367,7 @@ class QSDF_PT_launcher(bpy.types.Panel):
             editing_aux = _draw_aux_edit_status(status, context, project)
             if not editing_aux:
                 _paint_buttons(status, project)
+                status.prop(project, "limit_paint_to_face_uv")
                 row = status.row(align=True)
                 row.operator(
                     "quicksdf.mirror_toggle", text="Mirror On", icon="MOD_MIRROR",
@@ -765,6 +766,7 @@ class QSDF_PT_image_studio(bpy.types.Panel):
         if not editing_aux:
             _paint_buttons(self.layout, project)
             self.layout.prop(project, "onion_enabled", text="Onion", toggle=True)
+            self.layout.prop(project, "limit_paint_to_face_uv")
         _export_controls(self.layout, project, compact=True)
 
 
