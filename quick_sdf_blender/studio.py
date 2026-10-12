@@ -1623,34 +1623,7 @@ def _collapse_screen(context: Any, window: Any) -> Any:
             raise StudioError(
                 "Quick SDF Paint layout changes did not settle; try opening it again"
             )
-        areas = tuple(screen.areas)
-        pair = next(
-            (
-                (first, second)
-                for first in areas
-                for second in areas
-                if first.as_pointer() < second.as_pointer()
-                and (
-                    (abs(first.x - second.x) <= 4 and abs(first.width - second.width) <= 4 and (abs(first.y + first.height - second.y) <= 4 or abs(second.y + second.height - first.y) <= 4))
-                    or
-                    (abs(first.y - second.y) <= 4 and abs(first.height - second.height) <= 4 and (abs(first.x + first.width - second.x) <= 4 or abs(second.x + second.width - first.x) <= 4))
-                )
-            ),
-            None,
-        )
-        if pair is None:
-            raise StudioError("Could not find rectangular Quick SDF Paint areas to join")
-        area, target = pair
-        region = _window_region(area)
-        override = {"window": window, "screen": screen, "area": area}
-        if region is not None:
-            override["region"] = region
-        source_xy = (area.x + area.width // 2, area.y + area.height // 2)
-        target_xy = (target.x + target.width // 2, target.y + target.height // 2)
-        with context.temp_override(**override):
-            result = bpy.ops.screen.area_join(source_xy=source_xy, target_xy=target_xy)
-        if not _operator_succeeded(result):
-            raise StudioError("Could not normalize the Quick SDF Paint workspace layout")
+        _join_one_area(context, window)
         screen = window.screen
     return screen.areas[0]
 
@@ -2318,45 +2291,11 @@ def _remove_workspace(workspace: Any | None) -> None:
         pass
 
 
-def _join_one_area(context: Any, window: Any) -> bool:
-    """Join one rectangular pair and return whether more areas remain."""
+def _join_area_pair(context: Any, window: Any, source: Any, target: Any) -> bool:
+    """Ask Blender to join one offered area pair into the other."""
 
-    screen = window.screen
-    areas = tuple(screen.areas)
-    if len(areas) <= 1:
-        return False
-    pair = next(
-        (
-            (first, second)
-            for first in areas
-            for second in areas
-            if first.as_pointer() < second.as_pointer()
-            and (
-                (
-                    abs(first.x - second.x) <= 4
-                    and abs(first.width - second.width) <= 4
-                    and (
-                        abs(first.y + first.height - second.y) <= 4
-                        or abs(second.y + second.height - first.y) <= 4
-                    )
-                )
-                or (
-                    abs(first.y - second.y) <= 4
-                    and abs(first.height - second.height) <= 4
-                    and (
-                        abs(first.x + first.width - second.x) <= 4
-                        or abs(second.x + second.width - first.x) <= 4
-                    )
-                )
-            )
-        ),
-        None,
-    )
-    if pair is None:
-        raise StudioError("Could not find adjacent workspace areas to join")
-    source, target = pair
     region = _window_region(source)
-    override = {"window": window, "screen": screen, "area": source}
+    override = {"window": window, "screen": window.screen, "area": source}
     if region is not None:
         override["region"] = region
     with context.temp_override(**override):
@@ -2364,9 +2303,30 @@ def _join_one_area(context: Any, window: Any) -> bool:
             source_xy=(source.x + source.width // 2, source.y + source.height // 2),
             target_xy=(target.x + target.width // 2, target.y + target.height // 2),
         )
-    if not _operator_succeeded(result):
+    return _operator_succeeded(result)
+
+
+def _join_one_area(context: Any, window: Any) -> bool:
+    """Join the cleanest touching pair of areas and report whether one went.
+
+    The gap between two touching areas is display scaled, so candidates are
+    ranked instead of matched against a fixed tolerance, and Blender decides
+    whether the offered pair really shares an edge.
+    """
+
+    from .area_geometry import join_candidates
+
+    areas = tuple(window.screen.areas)
+    if len(areas) <= 1:
+        return False
+    offered = False
+    for source, target in join_candidates(areas):
+        offered = True
+        if _join_area_pair(context, window, source, target):
+            return True
+    if offered:
         raise StudioError("Could not normalize the Quick SDF Paint workspace layout")
-    return len(areas) > 2
+    raise StudioError("Could not find adjacent workspace areas to join")
 
 
 def _configure_area_types(window: Any) -> tuple[Any, Any, Any]:
