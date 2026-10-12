@@ -1,30 +1,52 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""ctypes bridge to the optional Windows exact-EDT core."""
+"""ctypes bridge to the optional compiled exact-EDT core."""
 
 from __future__ import annotations
 
 import ctypes
+import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
-_DLL = None
+_DLL: Any = None
+# Sentinel for "the native core is absent or failed to load on this platform".
+_UNAVAILABLE = object()
 NATIVE_ABI = 8
+
+# The bundled exact-EDT core is optional: the pure Python implementations in
+# core.py / bake.py are used whenever the platform library is missing.
+_LIBRARY_NAMES = {
+    "win32": "quicksdf_core.dll",       # Windows (MSVC)
+    "darwin": "libquicksdf_core.dylib",  # macOS (clang)
+}
+_DEFAULT_LIBRARY_NAME = "libquicksdf_core.so"  # Linux (gcc/clang)
 
 
 class NativeCoreError(RuntimeError):
     pass
 
 
-def _load():
+def library_path():
+    """Return the bundled native core for this platform, or None."""
+
+    name = _LIBRARY_NAMES.get(sys.platform, _DEFAULT_LIBRARY_NAME)
+    candidate = Path(__file__).with_name("bin") / name
+    return candidate if candidate.exists() else None
+
+
+def _load() -> Any:
+    """Return the cached ctypes core, or None when it is unavailable."""
+
     global _DLL
-    if _DLL is False:
+    if _DLL is _UNAVAILABLE:
         return None
     if _DLL is not None:
         return _DLL
-    path = Path(__file__).with_name("bin") / "quicksdf_core.dll"
-    if not path.exists():
-        _DLL = False
+    path = library_path()
+    if path is None:
+        _DLL = _UNAVAILABLE
         return None
     try:
         dll = ctypes.CDLL(str(path))
@@ -36,7 +58,7 @@ def _load():
         dll.qsdf_version.argtypes = []
         dll.qsdf_version.restype = ctypes.c_int
         if int(dll.qsdf_version()) != NATIVE_ABI:
-            _DLL = False
+            _DLL = _UNAVAILABLE
             return None
         dll.qsdf_bake_face_shadow_guide.argtypes = [
             f32p, f32p, ctypes.c_int,
@@ -64,8 +86,8 @@ def _load():
         dll.qsdf_interpolate_binary_masks.restype = ctypes.c_int
         _DLL = dll
     except OSError:
-        _DLL = False
-    return None if _DLL is False else _DLL
+        _DLL = _UNAVAILABLE
+    return None if _DLL is _UNAVAILABLE else _DLL
 
 
 def available() -> bool:
@@ -98,7 +120,8 @@ def native_interpolation_available() -> bool:
 def interpolate_binary_masks(first, second, factor, cancel_flag=None):
     """Return an exact-SDF blend, using the current native core when available."""
 
-    from .core import _as_binary, interpolate_binary_masks as fallback
+    from .core import _as_binary
+    from .core import interpolate_binary_masks as fallback
 
     first_mask = _as_binary(first, ndim=2)
     second_mask = _as_binary(second, ndim=2)
@@ -166,6 +189,8 @@ def bake_face_shadow_guide(
 
     from .bake import (
         bake_face_shadow_guide as fallback,
+    )
+    from .bake import (
         guide_light_directions,
         shadow_amount_cutoff,
     )
@@ -250,7 +275,8 @@ def _cancel_value(cancel_flag):
 def repair_packed_lane(lane, *, cancel_flag=None):
     """Repair a compact :class:`core.PackedLane` through the current core."""
 
-    from .core import PackedLane, PackedLaneRepairResult, repair_packed_lane as fallback
+    from .core import PackedLane, PackedLaneRepairResult
+    from .core import repair_packed_lane as fallback
 
     if not isinstance(lane, PackedLane):
         raise TypeError("lane must be a PackedLane")
