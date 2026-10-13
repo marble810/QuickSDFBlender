@@ -123,6 +123,13 @@ Mirrorの推定に確信がない場合だけ、`Whole Texture`、`Paired Island
 
 Mirrorは既定でONです。通常は右側の0～100%だけを編集し、反対側の出力は自動生成します。左右を別々に描きたい場合だけ、`Advanced` → `Break Mirror`を使います。
 
+### UV境界の余白（Padding）
+
+- `Limit to Face UV`をONにして `Paint Padding (px)` を設定すると、2D／3Dの一筆で変更したUV境界の色が、その外側の余白へ自動延長されます。OFFの場合はUV外へ自由に塗れ、余白の自動延長は行いません。
+- Light Sweepの初期余白は、Project作成前の `Advanced` → `Guide Padding (px)` で設定します。作成後は `Advanced` → `Adjust Shadow Guide` の同じ項目を変更して `Update Shadow Guide` を押します。手描き修正は維持されます。
+- どちらも0～256pxで、既定の `0` は余白なしです。長さは作業テクスチャの実ピクセル数です。UV内の影形状は膨らませず、最も近いUV境界の色を外側へコピーします。画像端では切り詰められます。
+- Paint Paddingの変更は次の筆から適用され、既存の余白は消去しません。近くに別のUVアイランドがある場合は、余白が対象外のUVへ届かない長さにしてください。
+
 便利な操作：
 
 | 操作 | 内容 |
@@ -142,6 +149,8 @@ Quick SDF Paintワークスペースを開くとプレビューは自動で有�
 - `Paint Overlay`：元Materialに、Lightを暖色、Shadowを寒色で重ねる
 - `Mask`：不透明な白黒マスクを表示する
 - `Toon Result`：トゥーン表示で影の見え方を確認する
+
+Panelの `Mesh Normals (RGB)` ToggleをONにすると、対象Mesh全体の法線方向をRGBで確認できます。Object空間のX／Y／ZをR／G／Bへ対応させ、-1～+1を0～1へ変換します。現在のポーズ、Modifier、スムーズ／カスタム法線を反映し、MaterialのNormal Map／Bumpは使用しません。照明に依存しない表示ですが、画面の色はBlenderのカラーマネジメントを通ります。OFFにすると、直前に選んでいたDisplayへ戻ります。2D Canvas、ペイントデータ、Exportには影響せず、このToggleはファイルへ保存されません。
 
 Quick SDFを終了すると、元のWorkspace、選択、モード、Canvas、Materialへ戻ります。保存時も一時Materialは安全に復元されます。
 

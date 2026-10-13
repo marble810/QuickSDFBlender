@@ -97,10 +97,14 @@ def _draw_tool_settings(context: Any, layout: Any, _tool: Any) -> None:
         )
 
     if not editing_aux_uuid:
-        row.prop(project, "preview_mode", text="")
+        display = row.row(align=True)
+        display.enabled = not bool(project.mesh_normals_preview)
+        display.prop(project, "preview_mode", text="")
     if not editing_aux_uuid and getattr(getattr(context, "area", None), "type", "") == "IMAGE_EDITOR":
         row.prop(project, "onion_enabled", text="Onion", toggle=True, icon="IMAGE_ALPHA")
         row.prop(project, "limit_paint_to_face_uv", toggle=True)
+        if bool(project.limit_paint_to_face_uv):
+            row.prop(project, "paint_padding_px")
 
     row.separator()
     preparing_auto_key = bool(

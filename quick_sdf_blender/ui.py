@@ -404,12 +404,18 @@ class QSDF_PT_launcher(bpy.types.Panel):
             if not editing_aux:
                 _paint_buttons(status, project)
                 status.prop(project, "limit_paint_to_face_uv")
+                padding = status.row()
+                padding.enabled = bool(project.limit_paint_to_face_uv)
+                padding.prop(project, "paint_padding_px")
                 row = status.row(align=True)
                 row.operator(
                     "quicksdf.mirror_toggle", text="Mirror On", icon="MOD_MIRROR",
                     depress=bool(project.mirror_enabled),
                 )
-                row.prop(project, "preview_mode", text="")
+                display = row.row(align=True)
+                display.enabled = not bool(project.mesh_normals_preview)
+                display.prop(project, "preview_mode", text="")
+            status.prop(project, "mesh_normals_preview", toggle=True)
             if bool(project.base_needs_update):
                 warning = layout.box()
                 warning.label(text="Base needs update", icon="ERROR")
@@ -451,6 +457,8 @@ class QSDF_PT_advanced(bpy.types.Panel):
             settings = context.scene.quick_sdf_settings
             layout.prop(settings, "resolution")
             layout.prop(settings, "initialization")
+            if settings.initialization == "NORMAL_GUIDE":
+                layout.prop(settings, "guide_padding_px")
             if settings.initialization == "EXISTING":
                 layout.prop(settings, "source_image")
             if int(settings.resolution) >= 4096:
@@ -478,9 +486,14 @@ class QSDF_PT_advanced(bpy.types.Panel):
         _draw_front_axis(axes, context, project)
         axes.operator("quicksdf.set_forward_from_view", text="Use This View as Front")
 
+        normals = layout.row()
+        normals.enabled = bool(project.preview_enabled)
+        normals.prop(project, "mesh_normals_preview", toggle=True)
+
         guide = layout.box()
         guide.label(text="Adjust Shadow Guide")
         guide.prop(project, "guide_shadow_amount", text="Shadow Amount", slider=True)
+        guide.prop(project, "guide_padding_px")
         guide.operator("quicksdf.bake_base", text="Update Shadow Guide", icon="FILE_REFRESH")
         if bool(getattr(project, "guide_direction_warning", False)):
             guide.alert = True
@@ -815,6 +828,10 @@ class QSDF_PT_image_studio(bpy.types.Panel):
             _paint_buttons(self.layout, project)
             self.layout.prop(project, "onion_enabled", text="Onion", toggle=True)
             self.layout.prop(project, "limit_paint_to_face_uv")
+            padding = self.layout.row()
+            padding.enabled = bool(project.limit_paint_to_face_uv)
+            padding.prop(project, "paint_padding_px")
+        self.layout.prop(project, "mesh_normals_preview", toggle=True)
         _export_controls(self.layout, project, compact=True)
 
 

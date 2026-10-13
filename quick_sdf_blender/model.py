@@ -147,7 +147,17 @@ def _preview_mode_changed(project, _context) -> None:
 
             item = runtime.active_angle(project)
             image = runtime.resolve_display_image(project, item) if item is not None else None
-            ensure_preview_material(project, image)
+            for state in project.preview_slots:
+                ensure_preview_material(project, image, state)
+    except (AttributeError, ImportError, ReferenceError, RuntimeError, ValueError):
+        pass
+
+
+def _mesh_normals_preview_changed(project, _context) -> None:
+    try:
+        from .preview import refresh_mesh_normal_preview
+
+        refresh_mesh_normal_preview(project)
     except (AttributeError, ImportError, ReferenceError, RuntimeError, ValueError):
         pass
 
@@ -164,6 +174,11 @@ def _onion_changed(project, context) -> None:
             runtime.sync_canvas(context, project)
     except (AttributeError, ImportError, ReferenceError, RuntimeError, ValueError):
         pass
+
+
+def _guide_padding_changed(project, _context) -> None:
+    if str(getattr(project, "base_source", "")) == "NORMAL_GUIDE":
+        project.base_needs_update = True
 
 
 class QSDFBoundaryPoint(PropertyGroup):
@@ -364,8 +379,18 @@ class QSDFProject(PropertyGroup):
     paint_value: IntProperty(name="Paint Value", default=0, min=0, max=1)
     limit_paint_to_face_uv: BoolProperty(
         name="Limit to Face UV",
-        description="Discard stroke changes outside the Face Area UV coverage; disable to paint padding around UV islands. 3D face isolation is unchanged",
+        description="Limit strokes to Face Area UVs and extend changed edge texels by Paint Padding; disable to paint freely outside UVs. 3D face isolation is unchanged",
         default=True,
+    )
+    paint_padding_px: IntProperty(
+        name="Paint Padding (px)",
+        description="Extend painted UV edge colors outward by this many texture pixels when Limit to Face UV is enabled; 0 disables padding",
+        default=0, min=0, max=256,
+    )
+    guide_padding_px: IntProperty(
+        name="Guide Padding (px)",
+        description="Extend Light Sweep UV edge colors outward by this many texture pixels; apply with Update Shadow Guide. Manual edits are preserved",
+        default=0, min=0, max=256, update=_guide_padding_changed,
     )
     seek_angle: FloatProperty(name="Light Angle", default=0.0, min=0.0, max=90.0)
     preview_enabled: BoolProperty(name="Preview Enabled", default=False)
@@ -378,6 +403,13 @@ class QSDFProject(PropertyGroup):
         ),
         default="OVERLAY",
         update=_preview_mode_changed,
+    )
+    mesh_normals_preview: BoolProperty(
+        name="Mesh Normals (RGB)",
+        description="Show evaluated mesh normals on the entire target object as object-space RGB (X=R, Y=G, Z=B), without material normal maps; turn off to restore the selected display mode",
+        default=False,
+        options={"SKIP_SAVE"},
+        update=_mesh_normals_preview_changed,
     )
     onion_enabled: BoolProperty(name="Onion", default=False, update=_onion_changed)
     boundary_enabled: BoolProperty(name="Enable Boundary Tool", default=False)
@@ -466,6 +498,11 @@ class QSDFSettings(PropertyGroup):
             ("NORMAL_GUIDE", "Light Sweep", "Initialize from mesh normals in UV space"),
         ),
         default="NORMAL_GUIDE",
+    )
+    guide_padding_px: IntProperty(
+        name="Guide Padding (px)",
+        description="Extend the initial Light Sweep UV edge colors outward by this many texture pixels; 0 disables padding",
+        default=0, min=0, max=256,
     )
     source_image: PointerProperty(name="Source Mask", type=bpy.types.Image)
     mask_sequence_directory: StringProperty(name="Mask Directory", subtype="DIR_PATH", default="//QuickSDF_masks")

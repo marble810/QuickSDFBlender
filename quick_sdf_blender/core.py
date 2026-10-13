@@ -124,7 +124,9 @@ def _validated_angles(angles: Sequence[float] | np.ndarray, count: int) -> np.nd
     return array
 
 
-def _edt_rows_squared(cost: np.ndarray, *, block_rows: int = 1024) -> np.ndarray:
+def _edt_rows_squared(
+    cost: np.ndarray, *, block_rows: int = 1024, indices_out: np.ndarray | None = None
+) -> np.ndarray:
     """Felzenszwalb-Huttenlocher squared transform along the last axis.
 
     This vectorized adaptation is based on Pedro Felzenszwalb's 2006
@@ -134,7 +136,8 @@ def _edt_rows_squared(cost: np.ndarray, *, block_rows: int = 1024) -> np.ndarray
 
     Rows are processed together with NumPy while the lower-envelope dimension
     remains sequential.  Blocking prevents the envelope workspaces from
-    becoming excessive for 4K textures.
+    becoming excessive for 4K textures. If supplied, ``indices_out`` receives
+    the selected source column alongside each squared distance.
     """
 
     row_count, length = cost.shape
@@ -180,6 +183,8 @@ def _edt_rows_squared(cost: np.ndarray, *, block_rows: int = 1024) -> np.ndarray
                 advance = bounds[rows, envelope + 1] < float(q)
             vertex = vertices[rows, envelope]
             block_output[:, q] = (q - vertex) ** 2 + f[rows, vertex]
+            if indices_out is not None:
+                indices_out[block_start : block_start + batch, q] = vertex
     return output
 
 

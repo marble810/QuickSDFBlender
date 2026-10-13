@@ -183,6 +183,7 @@ def bake_face_shadow_guide(
     height=None,
     *,
     enforce_monotonic=True,
+    padding_px=0,
     cancel_flag=None,
 ):
     """Bake the side-explicit lilToon guide in the current core or exact Python."""
@@ -207,6 +208,7 @@ def bake_face_shadow_guide(
             width,
             height,
             enforce_monotonic=enforce_monotonic,
+            padding_px=padding_px,
         )
     uvs = np.ascontiguousarray(np.asarray(triangle_uvs), dtype=np.float32)
     normals = np.ascontiguousarray(np.asarray(corner_normals), dtype=np.float32)
@@ -259,9 +261,14 @@ def bake_face_shadow_guide(
         raise NativeCoreError("Native Quick SDF guide bake was cancelled")
     if code:
         raise NativeCoreError(f"Native Quick SDF guide bake failed with status {code}")
-    return np.ascontiguousarray(masks.astype(np.bool_)), np.ascontiguousarray(
-        occupancy.astype(np.bool_)
-    )
+    from .uv_padding import pad_guide_masks
+
+    masks = np.ascontiguousarray(masks, dtype=np.bool_)
+    occupancy = np.ascontiguousarray(occupancy, dtype=np.bool_)
+    pad_guide_masks(masks, occupancy, padding_px)
+    if cancel_value.value:
+        raise NativeCoreError("Native Quick SDF guide bake was cancelled")
+    return masks, occupancy
 
 
 def _cancel_value(cancel_flag):

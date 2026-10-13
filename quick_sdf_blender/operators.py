@@ -381,6 +381,7 @@ def _bake_project(context, project) -> None:
                 float(project.guide_shadow_amount),
                 int(project.resolution),
                 int(project.resolution),
+                padding_px=int(getattr(project, "guide_padding_px", 0)),
             )
             _write_sdf_area_occupancy(project, occupancy, force=False)
             if np.any(occupancy):
@@ -461,6 +462,7 @@ def _bake_revision_token(project) -> tuple:
         tuple(float(value) for value in project.forward_vector),
         tuple(float(value) for value in project.up_vector),
         float(project.guide_shadow_amount),
+        int(getattr(project, "guide_padding_px", 0)),
         _boundary_revision_token(project),
     )
 
@@ -488,6 +490,7 @@ def _compute_async_bake(request, cancel_flag=None):
             request["shadow_amount"],
             request["resolution"],
             request["resolution"],
+            padding_px=request.get("padding_px", 0),
             cancel_flag=cancel_flag,
         )
         if occupancy is None:
@@ -861,6 +864,7 @@ def _create_project_data(
         "WHITE": "WHITE",
     }.get(str(settings.initialization), "NORMAL_GUIDE")
     project.guide_shadow_amount = 50.0
+    project.guide_padding_px = int(getattr(settings, "guide_padding_px", 0))
     _assign_front_axis(project, _scene_front_axis(context.scene))
     try:
         runtime.create_face_region_attribute(project, obj, face_region_mask)
@@ -2443,9 +2447,22 @@ class QUICKSDF_OT_propagate_overrides(bpy.types.Operator):
                     if face_uv.shape != source_gray.shape:
                         raise ValueError("The Face Area UV mask changed size during the stroke")
                     outside = (source_gray != before_gray) & ~face_uv
-                    if np.any(outside):
+                    changed_outside = bool(np.any(outside))
+                    if changed_outside:
                         source_gray = source_gray.copy()
                         source_gray[outside] = before_gray[outside]
+                    if int(getattr(project, "paint_padding_px", 0)) > 0:
+                        from .uv_padding import extend_uv_edges
+
+                        edge_touched = (source_gray != before_gray) & face_uv
+                        if np.any(edge_touched):
+                            source_gray = source_gray.copy()
+                            changed_outside |= extend_uv_edges(
+                                source_gray,
+                                runtime.face_region_paint_padding(project),
+                                touched=edge_touched,
+                            )
+                    if changed_outside:
                         runtime.write_image_gray8(source_image, source_gray)
                 touched = source_gray != before_gray
                 if not np.any(touched):
@@ -3770,6 +3787,7 @@ def _start_bake_job(context, project) -> None:
         "forward": tuple(float(value) for value in project.forward_vector),
         "up": tuple(float(value) for value in project.up_vector),
         "shadow_amount": float(project.guide_shadow_amount),
+        "padding_px": int(getattr(project, "guide_padding_px", 0)),
         "resolution": int(project.resolution),
     }
     uv_perimeters = None

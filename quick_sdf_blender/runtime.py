@@ -43,6 +43,7 @@ COVERAGE_BITPLANE_KEY = "_qsdf_coverage_bitplane"
 FACE_REGION_UV_BITPLANE_KEY = "_qsdf_face_region_uv"
 FACE_REGION_ATTRIBUTE_PREFIX = ".qsdf_region_"
 _BITPLANE_CACHE = DecodedBitplaneCache()
+_UV_PADDING_CACHE: tuple[Any, int, Any] | None = None
 _GRAY_CACHE_NAME = ""
 _GRAY_CACHE_IDENTITY = 0
 _GRAY_CACHE_REVISION = -1
@@ -297,6 +298,21 @@ def face_region_uv_mask(project: Any) -> Any:
     if values.shape != expected:
         raise BitplaneError(f"Face Area UV shape {values.shape} does not match {expected}")
     return values
+
+
+def face_region_paint_padding(project: Any) -> Any:
+    """Cache only the current occupancy/radius map, not one map per key."""
+
+    global _UV_PADDING_CACHE
+    from .uv_padding import padding_map
+
+    occupancy = face_region_uv_mask(project)
+    pixels = int(getattr(project, "paint_padding_px", 0))
+    cached = _UV_PADDING_CACHE
+    if cached is None or cached[0] is not occupancy or cached[1] != pixels:
+        _UV_PADDING_CACHE = (occupancy, pixels, padding_map(occupancy, pixels))
+    return _UV_PADDING_CACHE[2]
+
 
 def begin_base_bake(project_uuid: str) -> None:
     _BASE_BAKE_UUIDS.add(str(project_uuid))
@@ -1910,7 +1926,9 @@ def _load_post_transient_cleanup(_unused: Any) -> None:
 
 @persistent
 def _load_or_undo_post(_unused: Any) -> None:
-    global _GRAY_UPLOAD_BUFFER
+    global _GRAY_UPLOAD_BUFFER, _UV_PADDING_CACHE
+
+    _UV_PADDING_CACHE = None
 
     _INTERACTIVE_PAINT_SNAPSHOTS.clear()
     _AUX_PAINT_SNAPSHOTS.clear()
@@ -2065,7 +2083,9 @@ def register_runtime() -> None:
 
 
 def unregister_runtime() -> None:
-    global _GRAY_UPLOAD_BUFFER
+    global _GRAY_UPLOAD_BUFFER, _UV_PADDING_CACHE
+
+    _UV_PADDING_CACHE = None
 
     cleanup_export_adjustment_previews()
     _INTERACTIVE_PAINT_SNAPSHOTS.clear()

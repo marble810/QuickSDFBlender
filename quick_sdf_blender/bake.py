@@ -311,13 +311,15 @@ def bake_face_shadow_guide(
     height: int | None = None,
     *,
     enforce_monotonic: bool = True,
+    padding_px: int = 0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Bake the rear-oblique to front-oblique authoring guide.
 
     Every key, including 90 degrees, is a real N·L sample.  The directly-behind
     pure-black and directly-front pure-white endpoints are not part of this
     guide; export adds those 180 and 0 degree sentinels when writing the
-    threshold texture.
+    threshold texture. ``padding_px`` copies UV edge values outward without
+    changing occupied texels; the returned occupancy remains the original UVs.
     """
 
     angle_values, directions = guide_light_directions(angles, forward, up, side)
@@ -331,6 +333,9 @@ def bake_face_shadow_guide(
         masks = np.ascontiguousarray(masks, dtype=np.bool_)
         for closer in range(1, masks.shape[0]):
             masks[closer] |= masks[closer - 1]
+    from .uv_padding import pad_guide_masks
+
+    pad_guide_masks(masks, occupancy, padding_px)
     return np.ascontiguousarray(masks), occupancy
 
 

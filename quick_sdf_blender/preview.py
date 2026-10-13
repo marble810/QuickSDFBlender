@@ -130,12 +130,75 @@ if bpy is not None:
         )
 
 
+    def _mesh_normal_surface(material: Any) -> Any:
+        """Encode evaluated object-space mesh normals as unlit RGB.
+
+        Geometry Normal honors smooth/custom split normals without sampling the
+        source material's normal or bump maps. RGB = normalize(N) * 0.5 + 0.5.
+        """
+        nodes = material.node_tree.nodes
+        links = material.node_tree.links
+        geometry = nodes.get("QSDF Mesh Normal") or nodes.new("ShaderNodeNewGeometry")
+        geometry.name = "QSDF Mesh Normal"
+        geometry.location = (-600, -500)
+        transform = nodes.get("QSDF Object Normal") or nodes.new("ShaderNodeVectorTransform")
+        transform.name = "QSDF Object Normal"
+        transform.vector_type = "NORMAL"
+        transform.convert_from = "WORLD"
+        transform.convert_to = "OBJECT"
+        transform.location = (-390, -500)
+        normalize = nodes.get("QSDF Normalize Normal") or nodes.new("ShaderNodeVectorMath")
+        normalize.name = "QSDF Normalize Normal"
+        normalize.operation = "NORMALIZE"
+        normalize.location = (-180, -500)
+        encode = nodes.get("QSDF Normal RGB") or nodes.new("ShaderNodeVectorMath")
+        encode.name = "QSDF Normal RGB"
+        encode.operation = "MULTIPLY_ADD"
+        encode.inputs[1].default_value = (0.5, 0.5, 0.5)
+        encode.inputs[2].default_value = (0.5, 0.5, 0.5)
+        encode.location = (30, -500)
+        surface = nodes.get("QSDF Normal Surface") or nodes.new("ShaderNodeEmission")
+        surface.name = "QSDF Normal Surface"
+        surface.inputs["Strength"].default_value = 1.0
+        surface.location = (240, -500)
+        for node in (transform, normalize, encode, surface):
+            for socket in node.inputs:
+                for link in tuple(socket.links):
+                    links.remove(link)
+        links.new(geometry.outputs["Normal"], transform.inputs["Vector"])
+        links.new(transform.outputs["Vector"], normalize.inputs[0])
+        links.new(normalize.outputs["Vector"], encode.inputs[0])
+        links.new(encode.outputs["Vector"], surface.inputs["Color"])
+        return surface.outputs["Emission"]
+
+
+    def refresh_mesh_normal_preview(project: Any) -> None:
+        """Switch the debug view while retaining the current Canvas/seek image."""
+        if not bool(getattr(project, "preview_enabled", False)):
+            return
+        image = None
+        for state in project.preview_slots:
+            material = bpy.data.materials.get(str(state.preview_material_name))
+            texture = material.node_tree.nodes.get("QSDF Mask") if material is not None and material.use_nodes else None
+            if texture is not None and texture.image is not None:
+                image = texture.image
+                break
+        if image is None:
+            from . import runtime
+
+            item = runtime.active_angle(project)
+            image = runtime.resolve_display_image(project, item) if item is not None else None
+        # Reassign through the existing reversible slot machinery: debug view
+        # covers every target-object slot, and disabling restores non-face slots.
+        assign_preview_material(project, image)
+
+
     def ensure_preview_material(
         project: Any,
         image: Any | None = None,
         slot_state: Any | None = None,
     ) -> Any:
-        """Create a reversible Original + Paint Overlay material.
+        """Create a reversible paint overlay or RGB mesh-normal material.
 
         The artist's material is copied rather than replaced with an unrelated
         black emission shader.  A small emission overlay is mixed on top of the
@@ -250,6 +313,8 @@ if bpy is not None:
             base.location = (80, 180)
             original_socket = base.outputs["BSDF"]
 
+        show_normals = bool(getattr(project, "mesh_normals_preview", False))
+        preview_shader = _mesh_normal_surface(material) if show_normals else group_node.outputs["Shader"]
         preview_mode = str(project.preview_mode)
         region_factor.inputs[1].default_value = 0.35 if preview_mode == "OVERLAY" else 1.0
         if "Light Color" in group_node.inputs and "Shadow Color" in group_node.inputs:
@@ -276,9 +341,12 @@ if bpy is not None:
         links.new(uv_map.outputs["UV"], texture.inputs["Vector"])
         links.new(texture.outputs["Color"], group_node.inputs["Mask"])
         links.new(original_socket, mix_shader.inputs[1])
-        links.new(group_node.outputs["Shader"], mix_shader.inputs[2])
+        links.new(preview_shader, mix_shader.inputs[2])
         links.new(region_attribute.outputs["Fac"], region_factor.inputs[0])
-        links.new(region_factor.outputs["Value"], mix_shader.inputs[0])
+        if show_normals:
+            mix_shader.inputs[0].default_value = 1.0
+        else:
+            links.new(region_factor.outputs["Value"], mix_shader.inputs[0])
         links.new(mix_shader.outputs["Shader"], output.inputs["Surface"])
         return material
 
@@ -373,7 +441,7 @@ if bpy is not None:
 
 
     def assign_preview_material(project: Any, image: Any | None = None) -> Any:
-        """Assign a face-gated preview to every slot used by the Face Area.
+        """Assign face-gated paint, or whole-object RGB mesh-normal preview.
 
         Slots are switched to object linking before assignment. The mesh data
         and therefore every other object sharing that mesh remain untouched.
@@ -383,7 +451,11 @@ if bpy is not None:
         obj = _target_object(project)
         if obj is None or obj.type != "MESH":
             raise ValueError("Quick SDF target mesh is unavailable")
-        slot_indices = runtime.face_region_material_slots(project)
+        slot_indices = (
+            tuple(range(len(obj.material_slots)))
+            if bool(getattr(project, "mesh_normals_preview", False))
+            else runtime.face_region_material_slots(project)
+        )
         restore_preview_materials(project)
         for slot_index in slot_indices:
             _restore_slot_entries(obj, slot_index)
@@ -617,6 +689,10 @@ else:
         return None
 
 
+    def refresh_mesh_normal_preview(_project: Any) -> None:
+        raise RuntimeError("Blender is required for mesh normal preview")
+
+
     def set_preview_image(_project: Any, _image: Any) -> None:
         return None
 
@@ -653,6 +729,7 @@ __all__ = [
     "restore_all_preview_materials",
     "restore_preview_materials",
     "register_preview",
+    "refresh_mesh_normal_preview",
     "set_preview_image",
     "unregister_preview",
 ]
