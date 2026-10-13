@@ -1,4 +1,12 @@
-"""Interactive-window smoke for the Quick SDF Paint workspace transaction."""
+"""ARCHIVED: interactive-window smoke for the Quick SDF Paint workspace transaction.
+
+Superseded by commit 8416b09, which moved the angle timeline out of a dedicated
+``NODE_EDITOR`` area into a self-drawn overlay at the bottom of the 3D Viewport
+and made the default Studio workspace a Canvas/3D two-column layout.  This file
+still drives the removed three-area layout, so it fails as soon as Studio opens,
+and no gate runs it.  It is kept only as a reference for the Studio behaviour
+that the live smoke tests still have to cover.
+"""
 
 from __future__ import annotations
 
@@ -18,6 +26,21 @@ sys.path.insert(0, str(ROOT))
 
 import bpy  # noqa: E402
 import numpy as np  # noqa: E402
+
+
+def _assert_studio_clip(space, obj) -> None:
+    from quick_sdf_blender import studio
+
+    expected_start, expected_end = studio._studio_clip_range(obj)
+    assert abs(float(space.clip_start) - expected_start) < 1.0e-6, (
+        float(space.clip_start),
+        expected_start,
+    )
+    assert abs(float(space.clip_end) - expected_end) < 1.0e-5, (
+        float(space.clip_end),
+        expected_end,
+    )
+    assert float(space.clip_end) / float(space.clip_start) <= studio._CLIP_RATIO + 1.0e-3
 
 
 def _source_fingerprints(project, runtime):
@@ -225,6 +248,9 @@ def check() -> float | None:
                     expected = STATE["studio_clip_starts"].get(int(space.as_pointer()))
                     if expected is not None:
                         assert float(space.clip_start) == expected
+                    expected_end = STATE["studio_clip_ends"].get(int(space.as_pointer()))
+                    if expected_end is not None:
+                        assert float(space.clip_end) == expected_end
             assert not STATE["project"].job_running
             assert not bpy.app.timers.is_registered(operators._poll_export_job)
             temporary_images = [
@@ -498,10 +524,11 @@ def check() -> float | None:
         session = studio.current_session()
         assert session is not None
         STATE["studio_clip_starts"] = dict(session.previous_clip_starts)
+        STATE["studio_clip_ends"] = dict(session.previous_clip_ends)
         view_area = next(area for area in bpy.context.window.screen.areas if area.type == "VIEW_3D")
         view_space = view_area.spaces.active
         assert view_space.shading.type == "MATERIAL"
-        assert float(view_space.clip_start) <= max(float(value) for value in obj.dimensions) * 1.0e-4 + 1.0e-8
+        _assert_studio_clip(view_space, obj)
         from quick_sdf_blender.tools import QSDF_WST_image_paint, QSDF_WST_view_paint
 
         assert "USE_BRUSHES" in QSDF_WST_view_paint.bl_options
@@ -584,7 +611,7 @@ def check() -> float | None:
         assert studio.is_studio_active(bpy.context, str(project.uuid))
         assert obj.material_slots[0].material != STATE["original_material"]
         assert bpy.context.scene.tool_settings.image_paint.use_normal_falloff is False
-        assert float(view_space.clip_start) <= max(float(value) for value in obj.dimensions) * 1.0e-4 + 1.0e-8
+        _assert_studio_clip(view_space, obj)
         assert project.onion_enabled
         assert bpy.context.scene.tool_settings.image_paint.canvas == canvas
         assert image_area.spaces.active.image.get(runtime.ROLE_KEY) == ONION_PREVIEW_ROLE

@@ -1,4 +1,10 @@
-"""Verify that an active Studio save opens as a clean, inactive project."""
+"""Verify that an active Studio save opens as a clean, inactive project.
+
+Currently has no producer: this script needs a .blend saved from an active
+Studio session, which only the archived ``tests/archive/blender_studio_smoke.py``
+produced.  It is kept for the replacement Studio smoke that re-creates that save
+and its Texture Paint autosave.
+"""
 
 from __future__ import annotations
 

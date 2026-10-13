@@ -4,9 +4,10 @@ The source material intentionally owns two Material Output nodes.  Quick SDF
 must attach to the active output, keep the paint Canvas wired to the preview
 texture, and make white/black Canvas changes observable by the render engine.
 
-Viewport shading recovery is exercised by ``blender_studio_smoke.py`` because
-background Blender has no VIEW_3D. Keeping rendering here makes this gate fast
-and independent of editor timing or GPU cursor overlays.
+Viewport shading recovery (Solid back to Material Preview) is not covered here:
+background Blender has no VIEW_3D.  The interactive Studio smoke that exercised
+it is archived in ``tests/archive/blender_studio_smoke.py``; restore that
+coverage in a replacement Studio smoke before the next release.
 """
 
 from __future__ import annotations
