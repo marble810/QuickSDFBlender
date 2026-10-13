@@ -13,7 +13,7 @@ import numpy as np
 _DLL: Any = None
 # Sentinel for "the native core is absent or failed to load on this platform".
 _UNAVAILABLE = object()
-NATIVE_ABI = 8
+NATIVE_ABI = 9
 
 # The bundled exact-EDT core is optional: the pure Python implementations in
 # core.py / bake.py are used whenever the platform library is missing.

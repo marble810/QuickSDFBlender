@@ -19,8 +19,11 @@ from bpy.props import (
 from mathutils import Vector
 
 from . import runtime
+from .bake import DEFAULT_FRONT_AXIS, WORLD_FRONT_AXES, WORLD_UP, local_character_axes
 from .history import History
 from .model import DEFAULT_KEY_ANGLES, SIDE_LIGHT_KEY_ANGLE
+
+FRONT_AXIS_SCENE_KEY = "quick_sdf_front_axis"
 
 
 _HISTORIES: dict[str, History] = {}
@@ -129,6 +132,32 @@ def _project_for_object(scene: bpy.types.Scene, obj: bpy.types.Object | None):
 
     _index, project = _project_entry_for_object(scene, obj)
     return project
+
+
+def _scene_front_axis(scene) -> str:
+    axis = str(scene.get(FRONT_AXIS_SCENE_KEY, DEFAULT_FRONT_AXIS))
+    return axis if axis in WORLD_FRONT_AXES else DEFAULT_FRONT_AXIS
+
+
+def _object_rotation(obj):
+    import numpy as np
+
+    return np.asarray(obj.matrix_world.to_quaternion().to_matrix(), dtype=np.float64)
+
+
+def _assign_world_axes(project, world_forward, world_up) -> None:
+    obj = project.target_object
+    if obj is None:
+        raise ValueError("The target object is missing")
+    forward, up = local_character_axes(_object_rotation(obj), world_forward, world_up)
+    project.forward_vector = tuple(float(value) for value in forward)
+    project.up_vector = tuple(float(value) for value in up)
+
+
+def _assign_front_axis(project, axis: str) -> None:
+    if axis not in WORLD_FRONT_AXES:
+        raise ValueError(f"Unknown front axis {axis}")
+    _assign_world_axes(project, WORLD_FRONT_AXES[axis], WORLD_UP)
 
 
 def _extract_evaluated_bake_input(context, project):
@@ -832,6 +861,7 @@ def _create_project_data(
         "WHITE": "WHITE",
     }.get(str(settings.initialization), "NORMAL_GUIDE")
     project.guide_shadow_amount = 50.0
+    _assign_front_axis(project, _scene_front_axis(context.scene))
     try:
         runtime.create_face_region_attribute(project, obj, face_region_mask)
         _validate_face_region_uv_separation(project)
@@ -1035,15 +1065,64 @@ class QUICKSDF_OT_set_forward_from_view(bpy.types.Operator):
         obj = project.target_object
         if obj is None or context.region_data is None:
             return {"CANCELLED"}
-        world_forward = context.region_data.view_rotation @ Vector((0.0, 0.0, 1.0))
-        local_forward = (obj.matrix_world.to_quaternion().inverted() @ world_forward).normalized()
+        view_rotation = context.region_data.view_rotation
+        world_forward = view_rotation @ Vector((0.0, 0.0, 1.0))
+        world_up = view_rotation @ Vector((0.0, 1.0, 0.0))
         previous_forward = tuple(project.forward_vector)
-        project.forward_vector = local_forward
+        previous_up = tuple(project.up_vector)
         try:
+            _assign_world_axes(project, world_forward, world_up)
             _bake_project(context, project)
             runtime.sync_canvas(context, project)
         except Exception as exc:
             project.forward_vector = previous_forward
+            project.up_vector = previous_up
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        project.dirty = True
+        return {"FINISHED"}
+
+
+class QUICKSDF_OT_set_front_axis(bpy.types.Operator):
+    bl_idname = "quicksdf.set_front_axis"
+    bl_label = "Set Front Axis"
+    bl_description = "Use this world axis as the character front and update the shadow guide"
+    bl_options = {"REGISTER", "UNDO"}
+
+    axis: EnumProperty(
+        name="Front",
+        items=(
+            ("NEG_Y", "-Y", "World -Y, the default Blender front"),
+            ("POS_Y", "+Y", "World +Y"),
+            ("NEG_X", "-X", "World -X"),
+            ("POS_X", "+X", "World +X"),
+            ("NEG_Z", "-Z", "World -Z"),
+            ("POS_Z", "+Z", "World +Z"),
+        ),
+        default="NEG_Y",
+    )
+
+    def execute(self, context):
+        axis = str(self.axis)
+        if axis not in WORLD_FRONT_AXES:
+            self.report({"ERROR"}, "Unknown front axis")
+            return {"CANCELLED"}
+        context.scene[FRONT_AXIS_SCENE_KEY] = axis
+        project = _project_for_object(context.scene, context.active_object)
+        if project is None or project.target_object is None:
+            return {"FINISHED"}
+        previous_forward = tuple(project.forward_vector)
+        previous_up = tuple(project.up_vector)
+        try:
+            _assign_front_axis(project, axis)
+            if str(project.base_source) == "NORMAL_GUIDE" or any(
+                bool(item.is_generated) for item in project.angles
+            ):
+                _bake_project(context, project)
+                runtime.sync_canvas(context, project)
+        except Exception as exc:
+            project.forward_vector = previous_forward
+            project.up_vector = previous_up
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
         project.dirty = True
@@ -4308,6 +4387,7 @@ CLASSES = (
     QUICKSDF_OT_project_create,
     QUICKSDF_OT_project_remove,
     QUICKSDF_OT_set_forward_from_view,
+    QUICKSDF_OT_set_front_axis,
     QUICKSDF_OT_create_and_edit,
     QUICKSDF_OT_studio_enter,
     QUICKSDF_OT_studio_exit,

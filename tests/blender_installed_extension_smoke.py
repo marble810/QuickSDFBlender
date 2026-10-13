@@ -48,8 +48,8 @@ def run(module_name: str, expected_version: str, isolated_root: Path) -> None:
 
     native = importlib.import_module(f"{module_name}.native")
     assert native.available()
-    assert native.version() == 8
-    assert native.NATIVE_ABI == 8
+    assert native.version() == 9
+    assert native.NATIVE_ABI == 9
     assert native.native_guide_bake_available()
     assert native.native_interpolation_available()
     assert native.native_packed_lane_available()

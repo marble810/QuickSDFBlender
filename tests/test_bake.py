@@ -7,6 +7,7 @@ import numpy as np
 from quick_sdf_blender.bake import (
     bake_face_shadow_guide,
     guide_light_directions,
+    local_character_axes,
     rasterize_uv_normals,
     shadow_amount_cutoff,
 )
@@ -115,10 +116,10 @@ class FaceShadowGuideTests(unittest.TestCase):
         self.assertTrue(np.all(~masks[:-1] | masks[1:]))
         self.assertTrue(np.any(masks[3, occupancy]))
         self.assertTrue(np.any(~masks[3, occupancy]))
-        self.assertTrue(np.all(masks[-1, occupancy]))
+        self.assertTrue(np.any(~masks[-1, occupancy]))
         self.assertTrue(np.all(masks[:, ~occupancy]))
 
-    def test_final_guide_stage_is_full_light_even_without_monotonic_enforcement(self) -> None:
+    def test_final_guide_stage_is_a_real_light_sample(self) -> None:
         normals = np.zeros((2, 3, 3), dtype=np.float32)
         normals[..., 2] = 1.0
         masks, occupancy = bake_face_shadow_guide(
@@ -134,7 +135,28 @@ class FaceShadowGuideTests(unittest.TestCase):
             enforce_monotonic=False,
         )
         self.assertTrue(np.any(~masks[0, occupancy]))
-        self.assertTrue(np.all(masks[-1, occupancy]))
+        self.assertTrue(np.any(~masks[-1, occupancy]))
+
+
+class LocalCharacterAxesTests(unittest.TestCase):
+    def test_identity_keeps_world_negative_y_as_local_front(self) -> None:
+        forward, up = local_character_axes(np.eye(3), (0.0, -1.0, 0.0), (0.0, 0.0, 1.0))
+        np.testing.assert_allclose(forward, (0.0, -1.0, 0.0), atol=1e-6)
+        np.testing.assert_allclose(up, (0.0, 0.0, 1.0), atol=1e-6)
+
+    def test_object_x_rotation_maps_world_front_onto_local_plus_z(self) -> None:
+        rotation = np.array(
+            [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]],
+            dtype=np.float64,
+        )
+        forward, up = local_character_axes(rotation, (0.0, -1.0, 0.0))
+        np.testing.assert_allclose(forward, (0.0, 0.0, 1.0), atol=1e-6)
+        np.testing.assert_allclose(up, (0.0, 1.0, 0.0), atol=1e-6)
+
+    def test_parallel_world_up_falls_back_to_a_perpendicular_axis(self) -> None:
+        forward, up = local_character_axes(np.eye(3), (0.0, 0.0, 1.0), (0.0, 0.0, 1.0))
+        self.assertLess(abs(float(np.dot(forward, up))), 1e-6)
+        np.testing.assert_allclose(forward, (0.0, 0.0, 1.0), atol=1e-6)
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ ordered from 0 degrees towards 90 degrees and Light is required to expand.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Sequence
+from collections.abc import Sequence
 
 import numpy as np
 
@@ -306,10 +306,15 @@ def _threshold_for_side(
     sdf_cache: dict[int, np.ndarray],
 ) -> np.ndarray:
     height, width = masks.shape[1:]
+    # Export-only endpoints, not baked samples.  0 is the directly-front
+    # pure-white mask: a texel still in shadow after the last real key becomes
+    # light only at that endpoint.  65535 is the directly-behind pure-black
+    # mask's complement: a texel already light at the first real key was light
+    # before the baked 120-degree sample, so it takes the 180-degree value.
     threshold = np.full((height, width), ALWAYS_SHADOW, dtype=np.uint16)
     threshold[masks[indices[0]]] = ALWAYS_LIGHT
 
-    for first, second in zip(indices[:-1], indices[1:]):
+    for first, second in zip(indices[:-1], indices[1:], strict=True):
         transition = ~masks[first] & masks[second]
         if not np.any(transition):
             continue
@@ -371,7 +376,7 @@ def validate_side_monotonic(
     violation_map = np.zeros(masks.shape[1:], dtype=np.bool_)
     violation_count = 0
     for first, second, angle0, angle1 in zip(
-        masks[:-1], masks[1:], values[:-1], values[1:]
+        masks[:-1], masks[1:], values[:-1], values[1:], strict=True
     ):
         invalid = first & ~second
         count = int(np.count_nonzero(invalid))

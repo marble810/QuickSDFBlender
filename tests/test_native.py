@@ -20,7 +20,7 @@ from quick_sdf_blender.core import (
 class NativeCoreTests(unittest.TestCase):
     def test_version_eight_exports_only_current_api(self) -> None:
         self.assertEqual(native.version(), native.NATIVE_ABI)
-        self.assertEqual(native.NATIVE_ABI, 8)
+        self.assertEqual(native.NATIVE_ABI, 9)
         self.assertTrue(native.native_guide_bake_available())
         self.assertTrue(native.native_interpolation_available())
         self.assertTrue(native.native_packed_lane_available())
@@ -220,7 +220,7 @@ class NativeCoreTests(unittest.TestCase):
             )
             np.testing.assert_array_equal(occupancy, expected_occupancy)
             np.testing.assert_array_equal(masks, expected_masks)
-            self.assertTrue(np.all(masks[-1, occupancy]))
+            self.assertTrue(np.any(~masks[-1, occupancy]))
 
 
 if __name__ == "__main__":

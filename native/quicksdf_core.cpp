@@ -395,6 +395,11 @@ bool generate_channel_from_transitions(
         if (!masks_equal) previous_distance = std::move(current_distance);
         if (progress_completed) *progress_completed = index + 1;
     }
+    // 180 degrees behind is the export-only all-shadow sentinel and 0 degrees
+    // in front is the export-only all-light sentinel.  They are not baked keys.
+    // Pixels still shadow after the last real sample become the 0-degree value;
+    // pixels already light at the first real sample keep the 180-degree value
+    // written above.  Interior transitions stay on the authored 0..90 scale.
     return true;
 }
 
@@ -525,7 +530,7 @@ int rasterize_guide_normals(const float* triangle_uvs, const float* corner_norma
 
 }  // namespace
 
-QSDF_API int qsdf_version() { return 8; }
+QSDF_API int qsdf_version() { return 9; }
 
 QSDF_API int qsdf_interpolate_binary_masks(
     const uint8_t* first_mask, const uint8_t* second_mask,
@@ -603,12 +608,6 @@ QSDF_API int qsdf_bake_face_shadow_guide(
             for (size_t pixel = 0; pixel < pixels; ++pixel)
                 current[pixel] = uint8_t(current[pixel] || previous[pixel]);
         }
-        // The final authoring key represents Full Light. Paint overrides are
-        // composited later, so the Base Guide itself must illuminate every
-        // occupied texel at this endpoint.
-        uint8_t* final_mask = output_masks + size_t(angle_count - 1) * pixels;
-        for (size_t pixel = 0; pixel < pixels; ++pixel)
-            if (output_occupancy[pixel]) final_mask[pixel] = 1;
         return QSDF_OK;
     } catch (const std::bad_alloc&) {
         return QSDF_OUT_OF_MEMORY;

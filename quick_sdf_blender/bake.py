@@ -13,13 +13,33 @@ returned image.  Pixels outside the supplied triangles are always Light.
 
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 import numpy as np
 
 
 _EPSILON = 1.0e-12
 _ANGLE_EPSILON = 1.0e-7
+_AXIS_PARALLEL = 1.0 - 1.0e-6
+
+# Blender's front view looks along world -Y.  Character up is world +Z.
+# These are world axes; object rotation is applied by the caller.
+DEFAULT_FRONT_AXIS = "NEG_Y"
+WORLD_UP = (0.0, 0.0, 1.0)
+WORLD_FRONT_AXES = {
+    "NEG_Y": (0.0, -1.0, 0.0),
+    "POS_Y": (0.0, 1.0, 0.0),
+    "NEG_X": (-1.0, 0.0, 0.0),
+    "POS_X": (1.0, 0.0, 0.0),
+    "NEG_Z": (0.0, 0.0, -1.0),
+    "POS_Z": (0.0, 0.0, 1.0),
+}
+_WORLD_UP_FALLBACKS = (
+    (0.0, -1.0, 0.0),
+    (0.0, 1.0, 0.0),
+    (1.0, 0.0, 0.0),
+    (0.0, 0.0, 1.0),
+)
 
 
 def _positive_dimension(value: object, *, name: str) -> int:
@@ -81,6 +101,65 @@ def _unit_vector(value: Sequence[float] | np.ndarray, *, name: str) -> np.ndarra
     if length <= _EPSILON:
         raise ValueError(f"{name} must have non-zero length")
     return vector / length
+
+
+def _unit_direction(value: Sequence[float] | np.ndarray, *, name: str) -> np.ndarray:
+    vector = np.asarray(value, dtype=np.float64)
+    if vector.shape != (3,):
+        raise ValueError(f"{name} must contain exactly three values")
+    if not np.all(np.isfinite(vector)):
+        raise ValueError(f"{name} must be finite")
+    length = float(np.linalg.norm(vector))
+    if length <= _EPSILON:
+        raise ValueError(f"{name} must have non-zero length")
+    return vector / length
+
+
+def _rotation_matrix(object_rotation: np.ndarray | Sequence[object]) -> np.ndarray:
+    """Return the rotational part of an object-to-world 3x3 matrix."""
+
+    matrix = np.asarray(object_rotation, dtype=np.float64)
+    if matrix.shape != (3, 3) or not np.all(np.isfinite(matrix)):
+        raise ValueError("object rotation must be a finite 3x3 matrix")
+    # A scaled object matrix must not skew the light basis.  SVD removes scale
+    # while preserving a proper rotation, including mirrored objects.
+    left, _, right = np.linalg.svd(matrix)
+    rotation = left @ right
+    if float(np.linalg.det(rotation)) < 0.0:
+        left = left.copy()
+        left[:, -1] *= -1.0
+        rotation = left @ right
+    return rotation
+
+
+def local_character_axes(
+    object_rotation: np.ndarray | Sequence[object],
+    world_forward: Sequence[float] | np.ndarray,
+    world_up: Sequence[float] | np.ndarray = WORLD_UP,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Map a world front/up pair into the object's local bake frame.
+
+    Corner normals from an evaluated mesh are object-local.  The default front
+    is world -Y and the default up is world +Z, so a mesh rotated to stand in
+    Blender still sweeps across the face shown in the viewport.
+    """
+
+    rotation = _rotation_matrix(object_rotation)
+    forward = _unit_direction(world_forward, name="world forward")
+    up = _unit_direction(world_up, name="world up")
+    if abs(float(np.dot(forward, up))) > _AXIS_PARALLEL:
+        for candidate in _WORLD_UP_FALLBACKS:
+            trial = np.asarray(candidate, dtype=np.float64)
+            if abs(float(np.dot(forward, trial))) <= _AXIS_PARALLEL:
+                up = trial
+                break
+        else:
+            raise ValueError("world forward has no perpendicular up axis")
+    local_forward = _unit_direction(rotation.T @ forward, name="forward")
+    local_up = rotation.T @ up
+    local_up = local_up - local_forward * float(np.dot(local_up, local_forward))
+    local_up = _unit_direction(local_up, name="up")
+    return local_forward, local_up
 
 
 def guide_light_directions(
@@ -161,7 +240,7 @@ def rasterize_uv_normals(
     normal_image = np.zeros((image_height, image_width, 3), dtype=np.float32)
     occupancy = np.zeros((image_height, image_width), dtype=np.bool_)
 
-    for triangle_uv, triangle_normal in zip(uvs, normals):
+    for triangle_uv, triangle_normal in zip(uvs, normals, strict=True):
         # Integer image coordinates identify pixel centres after the -0.5
         # offset.  V is inverted because NumPy row zero is the image top.
         x = triangle_uv[:, 0] * image_width - 0.5
@@ -233,7 +312,13 @@ def bake_face_shadow_guide(
     *,
     enforce_monotonic: bool = True,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Bake an expanding rear-oblique-to-full-Light authoring guide."""
+    """Bake the rear-oblique to front-oblique authoring guide.
+
+    Every key, including 90 degrees, is a real N·L sample.  The directly-behind
+    pure-black and directly-front pure-white endpoints are not part of this
+    guide; export adds those 180 and 0 degree sentinels when writing the
+    threshold texture.
+    """
 
     angle_values, directions = guide_light_directions(angles, forward, up, side)
     cutoff = shadow_amount_cutoff(shadow_amount)
@@ -242,10 +327,6 @@ def bake_face_shadow_guide(
     )
     dots = np.einsum("hwc,ac->ahw", normals, directions, optimize=True)
     masks = (~occupancy)[None, :] | (dots >= cutoff)
-    # The final authoring stage represents the completed Light state, not one
-    # more physical N·L sample.  Paint overrides are separate layers and are
-    # reapplied by the Blender runtime after this base guide is returned.
-    masks[-1, occupancy] = True
     if enforce_monotonic:
         masks = np.ascontiguousarray(masks, dtype=np.bool_)
         for closer in range(1, masks.shape[0]):
@@ -254,8 +335,12 @@ def bake_face_shadow_guide(
 
 
 __all__ = [
+    "DEFAULT_FRONT_AXIS",
+    "WORLD_FRONT_AXES",
+    "WORLD_UP",
     "bake_face_shadow_guide",
     "guide_light_directions",
+    "local_character_axes",
     "rasterize_uv_normals",
     "shadow_amount_cutoff",
 ]

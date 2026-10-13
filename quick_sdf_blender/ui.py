@@ -11,10 +11,46 @@ from __future__ import annotations
 from typing import Any
 
 import bpy
+from mathutils import Vector
 
 from . import runtime
+from .bake import WORLD_FRONT_AXES
 from .i18n import tr
 from .model import DEFAULT_KEY_ANGLES
+from .operators import _scene_front_axis
+
+_FRONT_AXIS_ROWS = (
+    (("NEG_Y", "-Y"), ("POS_Y", "+Y"), ("NEG_X", "-X")),
+    (("POS_X", "+X"), ("NEG_Z", "-Z"), ("POS_Z", "+Z")),
+)
+
+
+def _matching_front_axis(project) -> str | None:
+    obj = getattr(project, "target_object", None)
+    if obj is None:
+        return None
+    rotation = obj.matrix_world.to_quaternion()
+    world = (rotation @ Vector(project.forward_vector)).normalized()
+    best = None
+    best_dot = 0.999
+    for axis_id, vector in WORLD_FRONT_AXES.items():
+        dot = float(world.dot(Vector(vector)))
+        if dot > best_dot:
+            best = axis_id
+            best_dot = dot
+    return best
+
+
+def _draw_front_axis(layout, context, project) -> None:
+    """World-axis front choices.  -Y is the default Blender front."""
+
+    active = _matching_front_axis(project) if project is not None else _scene_front_axis(context.scene)
+    layout.label(text="Front")
+    for row_items in _FRONT_AXIS_ROWS:
+        row = layout.row(align=True)
+        for axis_id, label in row_items:
+            operator = row.operator("quicksdf.set_front_axis", text=label, depress=axis_id == active)
+            operator.axis = axis_id
 
 
 def tag_editors_for_redraw() -> None:
@@ -378,6 +414,8 @@ class QSDF_PT_launcher(bpy.types.Panel):
                 warning = layout.box()
                 warning.label(text="Base needs update", icon="ERROR")
                 warning.operator("quicksdf.bake_base", text="Rebake Base", icon="FILE_REFRESH")
+            front = layout.box()
+            _draw_front_axis(front, context, project)
             if bool(getattr(project, "guide_direction_warning", False)):
                 direction = layout.box()
                 direction.alert = True
@@ -417,11 +455,11 @@ class QSDF_PT_advanced(bpy.types.Panel):
                 layout.prop(settings, "source_image")
             if int(settings.resolution) >= 4096:
                 layout.label(text="4096 uses substantial memory.", icon="ERROR")
+            _draw_front_axis(layout, context, None)
             return
 
         column = layout.column(align=True)
         column.prop(project, "target_object", text="Object")
-        obj = project.target_object
         try:
             slot_count = len(runtime.face_region_material_slots(project))
         except ValueError:
@@ -437,6 +475,7 @@ class QSDF_PT_advanced(bpy.types.Panel):
         column.prop(project, "resolution")
         axes = layout.box()
         axes.label(text="Character Axes")
+        _draw_front_axis(axes, context, project)
         axes.operator("quicksdf.set_forward_from_view", text="Use This View as Front")
 
         guide = layout.box()
