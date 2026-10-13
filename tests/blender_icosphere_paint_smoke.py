@@ -25,6 +25,7 @@ sys.path.insert(0, str(ROOT))
 import bpy  # noqa: E402
 import numpy as np  # noqa: E402
 from bpy_extras import view3d_utils  # noqa: E402
+from mathutils import Vector  # noqa: E402
 
 
 RESULT_PATH = ROOT / "build" / "icosphere_paint_smoke_result.txt"
@@ -390,6 +391,11 @@ def _tick() -> float | None:
         if phase == "FRAME":
             assert obj.mode == "TEXTURE_PAINT"
             assert view_space.shading.type == "MATERIAL"
+            # Blender's fresh VIEW_3D starts on the TOP view; Studio must open on
+            # the FRONT axis (from -Y toward +Y) so the painted face is visible.
+            look = view_space.region_3d.view_rotation @ Vector((0.0, 0.0, -1.0))
+            assert abs(look.y - 1.0) < 1.0e-6, tuple(look)
+            assert abs(look.x) < 1.0e-6 and abs(look.z) < 1.0e-6, tuple(look)
             with bpy.context.temp_override(
                 window=bpy.context.window,
                 screen=bpy.context.window.screen,
@@ -508,9 +514,14 @@ def _tick() -> float | None:
                     try:
                         bpy.ops.quicksdf.key_delete(uuid=str(endpoint.uuid))
                     except RuntimeError as exc:
-                        assert "endpoints cannot be deleted" in str(exc)
+                        # All nine default light-sweep angles are delete- and
+                        # retime-protected; only the wording is Blender's.
+                        assert "cannot be deleted" in str(exc)
                     else:
                         raise AssertionError("The locked endpoint delete was not rejected")
+                    assert any(
+                        str(item.uuid) == str(endpoint.uuid) for item in project.angles
+                    )
                     assert bpy.ops.quicksdf.history_undo.poll()
                     assert bpy.ops.quicksdf.history_undo() == {"FINISHED"}
                     np.testing.assert_array_equal(
@@ -705,16 +716,22 @@ def _tick() -> float | None:
 
             history = operator_module._HISTORIES.get(str(project.uuid))
             assert history is not None and history.can_undo
-            timeline_area = next(
-                area
-                for area in bpy.context.window.screen.areas
-                if area.type == "NODE_EDITOR"
-            )
-            timeline_region = next(
-                region for region in timeline_area.regions if region.type == "WINDOW"
-            )
-            event_x = int(timeline_region.x + timeline_region.width // 2)
-            event_y = int(timeline_region.y + timeline_region.height // 2)
+            # The angle timeline is a self-drawn overlay inside the 3D Viewport
+            # WINDOW region, so Ctrl+Z over it must stay inside Quick SDF's undo
+            # fence instead of reaching Blender's global Undo.
+            from quick_sdf_blender import viewport_lighting
+
+            with bpy.context.temp_override(
+                window=bpy.context.window,
+                screen=bpy.context.window.screen,
+                area=view_area,
+                region=view_region,
+            ):
+                layout = viewport_lighting._geometry(bpy.context)
+            assert layout is not None, "the Quick SDF viewport timeline overlay is missing"
+            panel = layout.panel
+            event_x = int(view_region.x + (panel.x0 + panel.x1) * 0.5)
+            event_y = int(view_region.y + (panel.y0 + panel.y1) * 0.5)
             STATE.update(
                 timeline_canvas_name=canvas.name,
                 timeline_canvas_pointer=int(canvas.as_pointer()),

@@ -67,6 +67,8 @@ class StudioSession:
     seek_angle: float = 0.0
     previous_normal_falloff: bool | None = None
     previous_clip_starts: tuple[tuple[int, float], ...] = ()
+    previous_clip_ends: tuple[tuple[int, float], ...] = ()
+    previous_view_overlays: tuple[tuple[int, bool], ...] = ()
     projection_settings_suspended: bool = False
     paint_surface_object_name: str = ""
     paint_surface_mesh_name: str = ""
@@ -1832,24 +1834,76 @@ def _studio_view_spaces(window: Any | None) -> tuple[Any, ...]:
     )
 
 
+def _suppress_studio_overlays(session: StudioSession, window: Any | None) -> bool:
+    """Hide alpha-blind native face-selection tint, not the painting mask.
+
+    Blender's Texture Paint face-mask overlay reveals transparent/internal
+    components in front of the material preview. There is no separate switch
+    for this tint: keep face isolation enabled and suppress native overlays in
+    the cloned Studio view only. Quick SDF's own draw handlers remain visible.
+    """
+
+    previous = dict(session.previous_view_overlays)
+    changed = False
+    for space in _studio_view_spaces(window):
+        overlay = getattr(space, "overlay", None)
+        if overlay is None:
+            continue
+        previous.setdefault(int(space.as_pointer()), bool(overlay.show_overlays))
+        if overlay.show_overlays:
+            overlay.show_overlays = False
+            changed = True
+    session.previous_view_overlays = tuple(previous.items())
+    return changed
+
+
+@persistent
+def _sync_native_studio_overlays(_scene: Any, _depsgraph: Any) -> None:
+    """Keep Edit Mode selection usable, then hide the tint on return to paint."""
+
+    session = _SESSION
+    if session is None or session.projection_settings_suspended:
+        return
+    window = find_window(session.window_pointer)
+    if window is None or window.workspace.name != session.workspace_name:
+        return
+    project = resolve_session_project(session)
+    obj = project.target_object if project is not None else None
+    if obj is None:
+        return
+    try:
+        changed = False
+        if obj.mode == "TEXTURE_PAINT":
+            changed = _suppress_studio_overlays(session, window)
+        elif obj.mode == "EDIT":
+            previous = dict(session.previous_view_overlays)
+            for space in _studio_view_spaces(window):
+                value = previous.get(int(space.as_pointer()))
+                if value is not None and space.overlay.show_overlays != value:
+                    space.overlay.show_overlays = value
+                    changed = True
+        if changed:
+            tag_studio_redraw()
+    except (AttributeError, ReferenceError, RuntimeError):
+        return
+
+
 def ensure_studio_material_preview(
     context: Any | None = None,
     *,
     session: StudioSession | None = None,
 ) -> bool:
-    """Keep the 3D paint surface visible after users change viewport shading.
+    """Recover Material Preview and hide native face-mask tint before painting.
 
-    Texture Paint can remain active while a View3D is switched back to Solid.
-    In that state Blender still edits the Image canvas, but the temporary Quick
-    SDF material is not displayed.  Studio owns its cloned workspace, so it is
-    safe to restore Material Preview whenever editing resumes.
+    Studio owns its cloned workspace; original overlay settings are captured
+    before suppression and restored on save, suspension or exit.
     """
 
     session = session or active_session(context or bpy.context)
     if session is None:
         return False
     window = find_window(session.window_pointer)
-    changed = False
+    changed = _suppress_studio_overlays(session, window)
     for space in _studio_view_spaces(window):
         shading = getattr(space, "shading", None)
         if shading is not None and str(getattr(shading, "type", "")) != "MATERIAL":
@@ -1860,10 +1914,40 @@ def ensure_studio_material_preview(
     return True
 
 
-def _adaptive_clip_start(obj: Any | None) -> float:
+# Material Preview draws its background on a sphere at the far clip. A near plane
+# of extent*1e-4 against the default far plane of 1000 makes that sphere flicker
+# black while orbiting. Keep the close-paint near plane, but cap the ratio.
+_CLIP_RATIO = 8000.0
+_CLIP_END_VIEW_FACTOR = 6.0
+
+
+def _object_extent(obj: Any | None) -> float:
     dimensions = tuple(abs(float(value)) for value in getattr(obj, "dimensions", (1.0, 1.0, 1.0)))
-    extent = max(dimensions or (1.0,))
-    return max(1.0e-6, extent * 1.0e-4)
+    return max(dimensions or (1.0,))
+
+
+def _studio_clip_range(obj: Any | None) -> tuple[float, float]:
+    """Return a near/far pair that contains the framed view without a flickering ratio."""
+
+    extent = _object_extent(obj)
+    # Match _frame_studio_content so the range is valid even if framing has not run.
+    radius = max(extent * 0.5, 1.0e-4)
+    view_distance = max(0.05, radius * 2.4)
+    clip_end = view_distance * _CLIP_END_VIEW_FACTOR
+    clip_start = max(1.0e-6, extent * 1.0e-4, clip_end / _CLIP_RATIO)
+    return clip_start, clip_end
+
+
+def _assign_clip_range(space: Any, clip_start: float, clip_end: float) -> None:
+    """Assign both planes without crossing Blender's start < end constraint."""
+
+    if hasattr(space, "clip_end"):
+        current_end = float(space.clip_end)
+        if clip_end > current_end or clip_start >= current_end:
+            space.clip_end = max(clip_end, clip_start + 1.0e-4)
+    space.clip_start = clip_start
+    if hasattr(space, "clip_end"):
+        space.clip_end = clip_end
 
 
 def _clear_paint_surface_snapshot(session: StudioSession) -> None:
@@ -2133,14 +2217,23 @@ def _store_projection_recovery(
         return
     image_paint = scene.tool_settings.image_paint
     previous_clip_starts = dict(session.previous_clip_starts)
+    previous_clip_ends = dict(session.previous_clip_ends)
+    previous_view_overlays = dict(session.previous_view_overlays)
     normal_falloff = (
         bool(session.previous_normal_falloff)
         if session.previous_normal_falloff is not None
         else bool(getattr(image_paint, "use_normal_falloff", True))
     )
+    spaces = _studio_view_spaces(window)
     clip_starts = [
         float(previous_clip_starts.get(int(space.as_pointer()), space.clip_start))
-        for space in _studio_view_spaces(window)
+        for space in spaces
+    ]
+    clip_ends = [
+        float(previous_clip_ends.get(int(space.as_pointer()), space.clip_end))
+        if hasattr(space, "clip_end")
+        else None
+        for space in spaces
     ]
     workspace[PROJECTION_RECOVERY_KEY] = json.dumps(
         {
@@ -2148,6 +2241,11 @@ def _store_projection_recovery(
             "screen": str(getattr(screen, "name", "")),
             "normal_falloff": normal_falloff,
             "clip_starts": clip_starts,
+            "clip_ends": clip_ends,
+            "view_overlays": [
+                bool(previous_view_overlays.get(int(space.as_pointer()), space.overlay.show_overlays))
+                for space in _studio_view_spaces(window)
+            ],
             "paint_surface": _paint_surface_recovery_record(session),
         },
         separators=(",", ":"),
@@ -2186,8 +2284,19 @@ def _restore_serialized_projection_settings() -> None:
                 for area in getattr(screen, "areas", ())
                 if area.type == "VIEW_3D" and hasattr(area.spaces.active, "clip_start")
             )
-            for space, value in zip(spaces, record.get("clip_starts", ())):
-                space.clip_start = float(value)
+            starts = tuple(record.get("clip_starts", ()))
+            ends = tuple(record.get("clip_ends", ()))
+            for index, space in enumerate(spaces):
+                if index >= len(starts):
+                    break
+                start = float(starts[index])
+                end = ends[index] if index < len(ends) else None
+                if end is None or not hasattr(space, "clip_end"):
+                    space.clip_start = start
+                else:
+                    _assign_clip_range(space, start, float(end))
+            for space, value in zip(spaces, record.get("view_overlays", ()), strict=False):
+                space.overlay.show_overlays = bool(value)
             remove_record = _restore_paint_surface_record(record.get("paint_surface"))
         except json.JSONDecodeError:
             # A malformed record cannot be used on a later load either.
@@ -2202,7 +2311,23 @@ def _restore_serialized_projection_settings() -> None:
                     pass
 
 
+def _capture_clip_history(session: StudioSession, spaces: tuple[Any, ...]) -> None:
+    if not session.previous_clip_starts:
+        session.previous_clip_starts = tuple(
+            (int(space.as_pointer()), float(space.clip_start)) for space in spaces
+        )
+    if not session.previous_clip_ends:
+        session.previous_clip_ends = tuple(
+            (int(space.as_pointer()), float(space.clip_end))
+            for space in spaces
+            if hasattr(space, "clip_end")
+        )
+
+
 def _apply_projection_settings(scene: Any, session: StudioSession, window: Any, obj: Any | None) -> None:
+    spaces = _studio_view_spaces(window)
+    _capture_clip_history(session, spaces)
+    _suppress_studio_overlays(session, window)
     _store_projection_recovery(scene, session, window)
     image_paint = scene.tool_settings.image_paint
     if session.previous_normal_falloff is None and hasattr(image_paint, "use_normal_falloff"):
@@ -2210,14 +2335,9 @@ def _apply_projection_settings(scene: Any, session: StudioSession, window: Any, 
     if hasattr(image_paint, "use_normal_falloff"):
         image_paint.use_normal_falloff = False
 
-    spaces = _studio_view_spaces(window)
-    if not session.previous_clip_starts:
-        session.previous_clip_starts = tuple(
-            (int(space.as_pointer()), float(space.clip_start)) for space in spaces
-        )
-    clip_start = _adaptive_clip_start(obj)
+    clip_start, clip_end = _studio_clip_range(obj)
     for space in spaces:
-        space.clip_start = min(float(space.clip_start), clip_start)
+        _assign_clip_range(space, clip_start, clip_end)
     session.projection_settings_suspended = False
 
 
@@ -2233,10 +2353,17 @@ def _restore_projection_settings(
         if hasattr(image_paint, "use_normal_falloff"):
             image_paint.use_normal_falloff = session.previous_normal_falloff
     previous = dict(session.previous_clip_starts)
+    previous_ends = dict(session.previous_clip_ends)
+    overlays = dict(session.previous_view_overlays)
     for space in _studio_view_spaces(window):
-        value = previous.get(int(space.as_pointer()))
+        pointer = int(space.as_pointer())
+        value = previous.get(pointer)
+        end = previous_ends.get(pointer)
         if value is not None:
-            space.clip_start = value
+            _assign_clip_range(space, value, end if end is not None else float(getattr(space, "clip_end", value + 1.0)))
+        show_overlays = overlays.get(pointer)
+        if show_overlays is not None:
+            space.overlay.show_overlays = show_overlays
     if clear_recovery:
         _clear_projection_recovery(window, session)
     session.projection_settings_suspended = True
@@ -2333,6 +2460,23 @@ def _join_one_area(context: Any, window: Any) -> bool:
     raise StudioError("Could not find adjacent workspace areas to join")
 
 
+# Blender's FRONT axis view (Numpad 1) looks from -Y toward +Y. A VIEW_3D area
+# created by changing ``area.type`` starts on the identity rotation, which is
+# the TOP view (from +Z toward -Z) and hides the face being painted.
+_FRONT_VIEW_ROTATION = (0.7071067811865476, 0.7071067811865476, 0.0, 0.0)
+
+
+def _align_studio_view_to_front(view_area: Any) -> None:
+    """Open the Studio 3D View on the painted face, not on Blender's fresh top view."""
+
+    region_3d = getattr(view_area.spaces.active, "region_3d", None)
+    if region_3d is None:
+        return
+    from mathutils import Quaternion
+
+    region_3d.view_rotation = Quaternion(_FRONT_VIEW_ROTATION)
+
+
 def _configure_area_types(window: Any) -> tuple[Any, Any, Any]:
     areas = sorted(window.screen.areas, key=lambda area: area.x)
     if len(areas) != 2:
@@ -2340,6 +2484,7 @@ def _configure_area_types(window: Any) -> tuple[Any, Any, Any]:
     image_area, view_area = areas
     image_area.type = "IMAGE_EDITOR"
     view_area.type = "VIEW_3D"
+    _align_studio_view_to_front(view_area)
     image_space = image_area.spaces.active
     if hasattr(image_space, "ui_mode"):
         image_space.ui_mode = "PAINT"
@@ -2401,6 +2546,7 @@ def _configure_legacy_area_types(window: Any) -> tuple[Any, Any, Any]:
     image_area, view_area = top_areas
     image_area.type = "IMAGE_EDITOR"
     view_area.type = "VIEW_3D"
+    _align_studio_view_to_front(view_area)
     bottom.type = TIMELINE_SPACE_TYPE
     image_space = image_area.spaces.active
     if hasattr(image_space, "ui_mode"):
@@ -3317,6 +3463,7 @@ def register_studio() -> None:
         (bpy.app.handlers.load_post, _load_post),
         (bpy.app.handlers.undo_post, _undo_post),
         (bpy.app.handlers.redo_post, _undo_post),
+        (bpy.app.handlers.depsgraph_update_post, _sync_native_studio_overlays),
     ):
         if handler not in collection:
             collection.append(handler)
@@ -3353,6 +3500,7 @@ def unregister_studio() -> None:
         (bpy.app.handlers.load_post, _load_post),
         (bpy.app.handlers.undo_post, _undo_post),
         (bpy.app.handlers.redo_post, _undo_post),
+        (bpy.app.handlers.depsgraph_update_post, _sync_native_studio_overlays),
     ):
         while handler in collection:
             collection.remove(handler)
