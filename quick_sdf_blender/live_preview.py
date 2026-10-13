@@ -324,8 +324,63 @@ def update_onion_preview(project: Any) -> Any | None:
     return image
 
 
+def update_endpoint_preview(project: Any, yaw: float) -> Any | None:
+    """Preview the export-only 180 degree shadow or 0 degree light sentinel.
+
+    Yaw is degrees from the character front.  Values above the first baked key
+    blend that key toward all Shadow.  Values below the last baked key blend
+    that key toward all Light.  Neither sentinel can become a paint key.
+    """
+
+    import numpy as np
+
+    side = str(getattr(project, "authoring_side", "RIGHT"))
+    items = sorted(
+        (item for item in project.angles if str(getattr(item, "side", "RIGHT")) == side),
+        key=lambda item: float(item.angle),
+    )
+    if not items:
+        return None
+    # An in-flight blue-lane SDF refresh must not overwrite this red-lane view.
+    _PENDING_REFRESH.pop(str(getattr(project, "uuid", "")), None)
+    value = max(0.0, min(180.0, float(yaw)))
+    if value >= 120.0 - 1.0e-4:
+        image = runtime.resolve_display_image(project, items[0])
+        if image is None:
+            return None
+        key_sdf = _finite_sdf(_sdf(image))
+        diagonal = float((key_sdf.shape[0] ** 2 + key_sdf.shape[1] ** 2) ** 0.5 + 1.0)
+        factor = (180.0 - value) / 60.0
+        mask = ((1.0 - factor) * diagonal + factor * key_sdf) <= 0.0
+    else:
+        image = runtime.resolve_display_image(project, items[-1])
+        if image is None:
+            return None
+        key_sdf = _finite_sdf(_sdf(image))
+        diagonal = float((key_sdf.shape[0] ** 2 + key_sdf.shape[1] ** 2) ** 0.5 + 1.0)
+        factor = (60.0 - value) / 60.0
+        mask = ((1.0 - factor) * key_sdf + factor * -diagonal) <= 0.0
+    height, width = mask.shape
+    rgba = np.empty((height, width, 4), dtype=np.uint8)
+    luminance = mask.astype(np.uint8, copy=False) * np.uint8(255)
+    rgba[..., :3] = luminance[..., None]
+    rgba[..., 3] = 255
+    preview = _preview_image(project, width, height)
+    runtime.write_image_rgba8(preview, rgba)
+    from .preview import set_preview_image
+
+    set_preview_image(project, preview)
+    return preview
+
+
 def update_seek_preview(project: Any, angle: float) -> Any | None:
     """Show an exact-SDF interpolation without changing the paint canvas."""
+
+    from .timeline import _stored_preview_yaw
+
+    yaw = _stored_preview_yaw(project)
+    if yaw is not None:
+        return update_endpoint_preview(project, yaw)
 
     import numpy as np
 

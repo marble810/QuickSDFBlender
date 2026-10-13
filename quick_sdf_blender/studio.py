@@ -283,6 +283,10 @@ def select_paint_key(
     resolved_index, item = _resolve_paint_key(project, key_uuid=key_uuid, index=index)
     if item is None or resolved_index is None:
         return False
+    from .timeline import PREVIEW_YAW_KEY
+
+    if PREVIEW_YAW_KEY in project:
+        del project[PREVIEW_YAW_KEY]
     angle = float(item.angle)
     project.active_angle_index = resolved_index
     project.active_angle_uuid = str(item.uuid)
@@ -1150,6 +1154,10 @@ def seek_preview(
 ) -> float:
     """Scrub a transient result without changing the edit key or paint canvas."""
 
+    from .timeline import PREVIEW_YAW_KEY
+
+    if PREVIEW_YAW_KEY in project:
+        del project[PREVIEW_YAW_KEY]
     value = max(0.0, min(90.0, float(angle)))
     session = active_session(context)
     if (

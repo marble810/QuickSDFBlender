@@ -513,14 +513,8 @@ class QSDF_PT_advanced(bpy.types.Panel):
             remove.uuid = str(active.uuid)
 
         layout.operator("quicksdf.bake_base", text="Rebake Base", icon="FILE_REFRESH")
-        layout.prop(project, "boundary_enabled")
-        if bool(project.boundary_enabled):
-            row = layout.row(align=True)
-            row.operator("quicksdf.boundary_track_add", text="Add Boundary", icon="ADD")
-            row.operator("quicksdf.boundary_track_remove", text="Remove", icon="REMOVE")
-            row = layout.row(align=True)
-            row.operator("quicksdf.boundary_draw", text="Draw Key", icon="GREASEPENCIL")
-            row.operator("quicksdf.boundary_commit", text="Commit", icon="CHECKMARK")
+        # Boundary authoring is hidden until its editing workflow is complete.
+        # Keep stored tracks and generation behavior intact for existing projects.
         review = layout.box()
         review.label(text="Review / Recovery")
         review.operator("quicksdf.export_mask_sequence", text="Export Review Masks")
@@ -788,6 +782,21 @@ class QSDF_PT_additional_masks(bpy.types.Panel):
             reset.mask_uuid = mask_uuid
 
 
+class QSDF_PT_ui_settings(bpy.types.Panel):
+    bl_idname = "QSDF_PT_ui_settings"
+    bl_label = "UI Settings"
+    bl_category = "Quick SDF"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_options = {"DEFAULT_CLOSED"}
+    bl_order = 1000
+
+    def draw(self, context):
+        from .preferences import draw_ui_settings
+
+        draw_ui_settings(self.layout, context)
+
+
 class QSDF_PT_image_studio(bpy.types.Panel):
     bl_idname = "QSDF_PT_image_studio"
     bl_label = "Quick SDF Paint"
@@ -834,6 +843,7 @@ CLASSES = (
     QSDF_PT_output_packing,
     QSDF_PT_additional_masks,
     QSDF_PT_image_studio,
+    QSDF_PT_ui_settings,
 )
 
 

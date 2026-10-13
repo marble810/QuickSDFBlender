@@ -25,6 +25,7 @@ class BL_UI_Slider(BL_UI_Widget):
         self.ui_scale = 1.0
 
         self._show_min_max = True
+        self.value_text: str | None = None  # Display label independent of rail position.
 
         self.__state = 0
         self.__is_drag = False
@@ -126,9 +127,11 @@ class BL_UI_Slider(BL_UI_Widget):
         elif self.__state == 2:
             color = self._hover_color
 
-        # Draw background
-        self.shader.uniform_float("color", self._bg_color)
-        self.batch_bg.draw(self.shader)
+        # Do not submit transparent rail geometry: thumbnail drawing may leave
+        # blending disabled, which would turn alpha-zero black into a black line.
+        if self._bg_color[3] > 0.0:
+            self.shader.uniform_float("color", self._bg_color)
+            self.batch_bg.draw(self.shader)
 
         # Draw slider   
         self.shader.uniform_float("color", color)
@@ -141,7 +144,7 @@ class BL_UI_Slider(BL_UI_Widget):
         blf.size(0, self._text_size)
         blf.color(0, *text_color)
         
-        sValue = sFormat.format(self.__slider_value)
+        sValue = self.value_text if self.value_text is not None else sFormat.format(self.__slider_value)
         size = blf.dimensions(0, sValue)
                       
         blf.position(0, self.__slider_pos + self.ui_scale + self.x_screen - size[0] / 2.0,
@@ -172,29 +175,21 @@ class BL_UI_Slider(BL_UI_Widget):
 
 
     def update_slider(self):
-        # Slider triangles
-        # 
-        #        0
-        #     1 /\ 2
-        #      |  |
-        #     3---- 4
-
-        # batch for slider
+        # Rectangular handle spanning the rail height, centered on its yaw.
         area_height = self.get_area_height()
 
-        h = self.__slider_height * self.ui_scale
+        h = self.height
         w = self.__slider_width * self.ui_scale
-        pos_y = area_height - self.y_screen - self.height / 2.0 + h / 2.0 + self.__slider_offset_y * self.ui_scale
+        pos_y = area_height - self.y_screen
         pos_x = self.x_screen + self.__slider_pos
-        
-        indices = ((0, 1, 2), (1, 2, 3), (3, 2, 4))
-        
+
+        indices = ((0, 1, 2), (0, 2, 3))
+
         vertices = (
-                    (pos_x    , pos_y    ),
-                    (pos_x - w, pos_y - w),
-                    (pos_x + w, pos_y - w),
-                    (pos_x - w, pos_y - h),
-                    (pos_x + w, pos_y - h)
+                    (pos_x - w, pos_y),
+                    (pos_x + w, pos_y),
+                    (pos_x + w, pos_y - h),
+                    (pos_x - w, pos_y - h)
                    )
                     
         self.shader = gpu.shader.from_builtin('UNIFORM_COLOR')
@@ -235,9 +230,9 @@ class BL_UI_Slider(BL_UI_Widget):
     
     def is_in_rect(self, x, y):
         area_height = self.get_area_height()
-        height = self.__slider_height * self.ui_scale
+        height = self.height
         width = self.__slider_width * self.ui_scale
-        slider_y = area_height - self.y_screen - self.height / 2.0 + height / 2.0 + self.__slider_offset_y * self.ui_scale
+        slider_y = area_height - self.y_screen
 
         if (
             (self.x_screen + self.__slider_pos - width <= x <=

@@ -214,11 +214,18 @@ def _draw():
             length = 0.055 if index in {0, 4, 8} else 0.030
             ticks.extend((center + direction * radius,
                           center + direction * (radius * (1.0 + length))))
-        # Author-facing continuous full semicircle: Starts is directly behind,
-        # halfway is side-on, and Full Light is directly in front. This display
-        # mapping does not change the narrower bake/preview light domain.
-        progress = max(0.0, min(1.0, float(project.seek_angle) / 90.0))
-        yaw = math.pi * (1.0 - progress)
+        # The ring still shows 180 behind through 0 in front.  Inside the
+        # baked keys the arrow follows that key's light.  Past the first or
+        # last key it follows the preview-only sentinel yaw.
+        from .timeline import _stored_preview_yaw
+
+        stored_yaw = _stored_preview_yaw(project)
+        if stored_yaw is None:
+            progress = max(0.0, min(1.0, float(project.seek_angle) / 90.0))
+            front_dot = progress - 0.5
+            yaw = math.acos(max(-1.0, min(1.0, front_dot)))
+        else:
+            yaw = math.radians(max(0.0, min(180.0, stored_yaw)))
         light = front * math.cos(yaw) + tangent * math.sin(yaw)
         tail = center + light * radius
         tip = center + light * (radius * 0.70)

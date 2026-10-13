@@ -15,9 +15,9 @@ bl_info = {
 
 
 def _modules():
-    from . import boundary, lighting_indicator, model, operators, preview, runtime, timeline, ui, viewport_lighting
+    from . import boundary, lighting_indicator, model, operators, preferences, preview, runtime, timeline, ui, viewport_lighting
 
-    return (model, runtime, operators, boundary, preview, timeline, ui, viewport_lighting, lighting_indicator)
+    return (preferences, model, runtime, operators, boundary, preview, timeline, ui, viewport_lighting, lighting_indicator)
 
 
 def register():

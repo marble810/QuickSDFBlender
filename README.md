@@ -56,6 +56,10 @@ Texture Paintに必要なDisplayだけをRGBA8 Imageとして保持し、Baseと
 
 通常作業で使うのは `Light`、`Shadow`、`Mirror On`、表示切替、`Export`だけです。解像度、UV、軸、Mirror方式、Boundaryなどは、3D Viewの `Quick SDF` → `Advanced` にまとめています。
 
+3D Viewの `Quick SDF` サイドバー最下部にある `UI Settings` → `Bottom UI Scale` で、下部のライト操作UI全体を0.5～2倍に調整できます。倍率は全Project共通のBlenderユーザー設定として保存されます。プリファレンスの自動保存をOFFにしている場合は、同じパネルの `Save Preferences` を押してください。
+
+透明な顔パーツに白い面選択の残像が重なるのを避けるため、Quick SDFの3Dペイント中はBlender標準のオーバーレイを一時的に非表示にします。Face Areaのペイント制限、Quick SDFの光照指示器と下部UIは維持されます。Edit Mode、保存、退出時には元のオーバーレイ設定へ戻ります。
+
 タイムラインのプレイヘッドは1本だけです。9個の標準キーは0、12.5、25、37.5、50、62.5、75、87.5、100%へ等間隔に並び、50%は直接ベイクされた `Side Light 90°` キーです。レールをドラッグしている間は2D／3Dでキー間を連続確認できます。既存キー付近で離すとそのキーへ吸着し、それ以外では一時Canvasを準備します。Customキーへ確定するのは、そこで0.5境界を越える変更を加えた時だけです。
 
 ## スレッショルドマップの出力

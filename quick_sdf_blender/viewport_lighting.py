@@ -48,7 +48,10 @@ def _geometry(context):
         return None
     # Blender's official custom-UI multiplier already includes OS DPI and
     # Preferences > Interface > Resolution Scale. Do not multiply DPI again.
-    scale = _UI_SIZE_MULTIPLIER * float(context.preferences.system.ui_scale)
+    from .preferences import timeline_ui_scale
+
+    scale = (_UI_SIZE_MULTIPLIER * float(context.preferences.system.ui_scale)
+             * timeline_ui_scale(context))
     region = context.region
     # Region coordinates, not area coordinates: headers must not shift hits.
     left, right = 12.0 * scale, float(region.width) - 12.0 * scale
@@ -63,7 +66,7 @@ def _geometry(context):
     x = left + (right - left - width) * 0.5
     thumb_width = 64.0 * scale * _THUMBNAIL_SIZE_MULTIPLIER
     thumb_height = 60.0 * scale * _THUMBNAIL_SIZE_MULTIPLIER
-    # Endpoint cards are centered on 0/100%, so reserve half a card on each end.
+    # Reserve half a card even if a key is placed at a rail boundary.
     margin = thumb_width * 0.5 + 12.0 * scale
     rail = timeline.Rect(x + margin, 34.0 * scale,
                          x + width - margin, 58.0 * scale)
@@ -72,7 +75,7 @@ def _geometry(context):
     geometry = timeline.TimelineGeometry(rail, (), 0.0, 90.0)
     key_rects = []
     for index, item in keys:
-        center = timeline._x_for_angle(geometry, float(item.angle))
+        center = timeline._x_for_yaw(rail, timeline._physical_light_yaw(float(item.angle)))
         key_rects.append((index, timeline.Rect(center - thumb_width * 0.5, 80.0 * scale,
                                               center + thumb_width * 0.5,
                                               80.0 * scale + thumb_height)))
@@ -86,7 +89,8 @@ def _geometry(context):
     busy = bool(operators._BAKE_JOB or operators._EXPORT_JOB
                 or (session is not None and session.provisional_promoting))
     can_delete = not busy and active is not None and not _is_default_key(float(active.angle))
-    definitions = (("add", "+", not busy and count < MAX_KEYS_PER_SIDE),
+    preview_only = timeline._stored_preview_yaw(project) is not None
+    definitions = (("add", "+", not busy and not preview_only and count < MAX_KEYS_PER_SIDE),
                    ("delete", "-", can_delete))
     controls = tuple((name, label, timeline.Rect(rail.x1 - (2 - i) * 27.0 * scale,
                       panel.y1 - 26.0 * scale, rail.x1 - (2 - i) * 27.0 * scale + 23.0 * scale,
@@ -96,14 +100,74 @@ def _geometry(context):
                           scale, controls, count)
 
 
+def _draw_slider_zones(rail, keys):
+    """Blue where keys can be added; red outside the first and last key."""
+
+    if not keys:
+        timeline._rect(rail, (0.72, 0.24, 0.20, 1.0))
+        return
+    first = timeline._x_for_yaw(rail, timeline._physical_light_yaw(float(keys[0][1].angle)))
+    last = timeline._x_for_yaw(rail, timeline._physical_light_yaw(float(keys[-1][1].angle)))
+    left, right = (first, last) if first <= last else (last, first)
+    red = (0.72, 0.24, 0.20, 1.0)
+    blue = (0.18, 0.45, 0.82, 1.0)
+    if left > rail.x0:
+        timeline._rect(timeline.Rect(rail.x0, rail.y0, left, rail.y1), red)
+    if right > left:
+        timeline._rect(timeline.Rect(left, rail.y0, right, rail.y1), blue)
+    if rail.x1 > right:
+        timeline._rect(timeline.Rect(right, rail.y0, rail.x1, rail.y1), red)
+
+
+def _clear_preview_yaw(project):
+    try:
+        if timeline.PREVIEW_YAW_KEY in project:
+            del project[timeline.PREVIEW_YAW_KEY]
+    except (KeyError, TypeError):
+        pass
+
+
+def _scrub_from_x(context, project, rail, x, *, settle=False, preview=True):
+    """Scrub the full 180..0 rail. Outside the baked keys, preview only."""
+
+    from .live_preview import update_endpoint_preview
+    from .studio import active_session, discard_provisional
+
+    yaw = timeline._yaw_from_rail(rail, x)
+    authoring = timeline._authoring_angle_for_yaw(yaw)
+    if authoring is None:
+        session = active_session(context)
+        if session is not None and session.provisional_uuid and not session.provisional_promoting:
+            discard_provisional(context, project)
+        project[timeline.PREVIEW_YAW_KEY] = float(yaw)
+        project.seek_angle = 0.0 if yaw >= 120.0 else 90.0
+        if session is not None and session.project_uuid == str(project.uuid):
+            session.view_mode = "PREVIEW"
+            session.seek_angle = float(project.seek_angle)
+        if preview:
+            update_endpoint_preview(project, yaw)
+        return
+    _clear_preview_yaw(project)
+    if settle:
+        timeline._settle_seek(context, project, authoring)
+    elif preview:
+        timeline._set_seek(context, project, authoring)
+    else:
+        timeline._set_seek_position_only(context, project, authoring)
+
+
 def _is_default_key(angle):
     return any(abs(angle - value) < 1.0e-5 for value in DEFAULT_KEY_ANGLES)
 
 
 def _status_text(project, session):
     from .i18n import tr
-    progress = timeline._progress_percent(project.seek_angle)
-    text = f"{progress:.1f}% · {180.0 * (1.0 - progress / 100.0):.1f}°"
+    yaw = timeline._stored_preview_yaw(project)
+    if yaw is None:
+        yaw = timeline._physical_light_yaw(float(project.seek_angle))
+        text = f"{timeline._progress_percent(project.seek_angle):.1f}% · {yaw:.1f}°"
+    else:
+        text = f"{yaw:.1f}°"
     if session is not None and session.provisional_uuid:
         state = str(session.provisional_state)
         label = {"PREPARING": "Preparing", "READY": "Pending paint",
@@ -123,7 +187,7 @@ def _draw():
     context = bpy.context
     project = _project(context)
     layout = _geometry(context) if project is not None else None
-    if layout is None:
+    if project is None or layout is None:
         return
     import gpu
     from .i18n import tr
@@ -149,7 +213,13 @@ def _draw():
         slider.ui_scale = scale
         slider.update(rail.x0, context.region.height - rail.y1)
         _LAYOUT = key
-    slider.set_value(timeline._progress_percent(project.seek_angle))
+    yaw = timeline._stored_preview_yaw(project)
+    if yaw is None:
+        yaw = timeline._physical_light_yaw(float(project.seek_angle))
+    slider.set_value((timeline._x_for_yaw(rail, yaw) - rail.x0) / (rail.x1 - rail.x0) * 100.0)
+    slider.value_text = f"{yaw:.1f}°"
+    preview_only = timeline._stored_preview_yaw(project) is not None
+    slider.bg_color = (0.0, 0.0, 0.0, 0.0)
     previous_blend = gpu.state.blend_get()
     try:
         gpu.state.blend_set("ALPHA")
@@ -184,7 +254,7 @@ def _draw():
                            rect.y0 + 4 * thumb_scale, size=round(10 * thumb_scale))
             if _is_default_key(float(item.angle)):
                 timeline._outline(rect, (0.20, 0.80, 0.35, 1.0), 2.0 * thumb_scale)
-            if index == active:
+            if index == active and not preview_only:
                 # Blue outside the card leaves its green stage border visible.
                 selected_rect = timeline.Rect(rect.x0 - 2 * thumb_scale, rect.y0 - 2 * thumb_scale,
                                               rect.x1 + 2 * thumb_scale, rect.y1 + 2 * thumb_scale)
@@ -198,36 +268,62 @@ def _draw():
                                             rect.x1 - 3 * thumb_scale, rect.y1 - 3 * thumb_scale),
                                (1.0, 0.15, 0.06, 1.0))
         timeline._text(_status_text(project, session), rail.x0, 65.0 * scale, size=round(11 * scale))
+        _draw_slider_zones(rail, keys)
         slider.draw()
         for index, item in keys:
-            position = timeline._x_for_angle(geometry, float(item.angle))
-            color = (0.18, 0.62, 1.0, 1.0) if index == active else (0.55, 0.58, 0.62, 1.0)
+            position = timeline._x_for_yaw(rail, timeline._physical_light_yaw(float(item.angle)))
+            color = (0.18, 0.62, 1.0, 1.0) if index == active and not preview_only else (0.55, 0.58, 0.62, 1.0)
             timeline._rect(timeline.Rect(position - scale, rail.y0 - 2 * scale,
                                         position + scale, rail.y0 + 3 * scale), color)
         if session is not None and session.provisional_uuid:
-            position = timeline._x_for_angle(geometry, float(project.seek_angle))
+            position = timeline._x_for_yaw(
+                rail, timeline._physical_light_yaw(float(project.seek_angle))
+            )
             # Hollow marker distinguishes the uncommitted position from keys.
             timeline._outline(timeline.Rect(position - 3 * scale, rail.y1 + scale,
                                             position + 3 * scale, rail.y1 + 5 * scale),
                               (1.0, 0.68, 0.20, 1.0), scale)
         middle = (rail.x0 + rail.x1) * 0.5
-        timeline._text(tr("Light Starts"), rail.x0, panel.y0 + 7 * scale, size=round(10 * scale))
+        timeline._text("180°", rail.x0, panel.y0 + 7 * scale,
+                       color=(0.85, 0.35, 0.30, 1.0), size=round(10 * scale))
         timeline._text(tr("Side Light 90°"), middle - 35 * scale,
                        panel.y0 + 7 * scale, size=round(10 * scale))
-        timeline._text(tr("Full Light"), rail.x1 - 55 * scale,
-                       panel.y0 + 7 * scale, size=round(10 * scale))
+        timeline._text("0°", rail.x1 - 18 * scale, panel.y0 + 7 * scale,
+                       color=(0.85, 0.35, 0.30, 1.0), size=round(10 * scale))
     finally:
         gpu.state.blend_set(previous_blend)
 
 
 class QSDF_GT_viewport_lighting(bpy.types.Gizmo):
     bl_idname = "QSDF_GT_viewport_lighting"
-    __slots__ = ("_shape", "_initial_seek", "_initial_key_uuid", "_dragging", "_last_preview_time")
+    __slots__ = ("_shape", "_initial_seek", "_initial_key_uuid", "_initial_preview_yaw",
+                 "_dragging", "_last_preview_time")
 
     setup = timeline.QSDF_GT_timeline_capture.setup
     draw = timeline.QSDF_GT_timeline_capture.draw
     _restore_initial_key = timeline.QSDF_GT_timeline_capture._restore_initial_key
-    exit = timeline.QSDF_GT_timeline_capture.exit
+    def exit(self, context, cancel):
+        # Blender can end a gizmo tweak without delivering RELEASE to modal().
+        # Never use the legacy exit: it settles the clamped authoring angle.
+        if not self._dragging:
+            return
+        project = _project(context)
+        if project is not None:
+            if cancel:
+                _clear_preview_yaw(project)
+                self._restore_initial_key(context, project)
+                initial_yaw = getattr(self, "_initial_preview_yaw", None)
+                layout = _geometry(context)
+                if initial_yaw is not None and layout is not None:
+                    rail = layout.geometry.rail
+                    _scrub_from_x(context, project, rail, timeline._x_for_yaw(rail, initial_yaw))
+            elif (yaw := timeline._stored_preview_yaw(project)) is not None:
+                from .live_preview import update_endpoint_preview
+                update_endpoint_preview(project, yaw)
+            else:
+                timeline._settle_seek(context, project, float(project.seek_angle))
+        timeline._clear_scrub_status(context)
+        self._dragging = False
 
     def test_select(self, context, location):
         layout = _geometry(context)
@@ -251,18 +347,19 @@ class QSDF_GT_viewport_lighting(bpy.types.Gizmo):
         hits = [(index, rect) for index, rect in layout.geometry.key_rects if rect.contains(*location)]
         if hits:
             index, _rect = min(hits, key=lambda pair: abs(location[0] - (pair[1].x0 + pair[1].x1) * 0.5))
+            _clear_preview_yaw(project)
             timeline._select_key(context, project, index)
             return {"FINISHED"}
         rail = layout.geometry.rail
         # Consume panel background clicks without changing light or painting.
         if not rail.contains(*location):
             return {"FINISHED"}
+        self._initial_preview_yaw = timeline._stored_preview_yaw(project)
         self._initial_seek = float(project.seek_angle)
         index = int(project.active_angle_index)
         self._initial_key_uuid = str(project.angles[index].uuid) if 0 <= index < len(project.angles) else ""
         self._dragging = True
-        value = layout.geometry.angle_from_x(event.mouse_region_x)
-        timeline._set_seek(context, project, value)
+        _scrub_from_x(context, project, rail, event.mouse_region_x)
         _set_status(context, project)
         self._last_preview_time = time.monotonic()
         return {"RUNNING_MODAL"}
@@ -277,21 +374,22 @@ class QSDF_GT_viewport_lighting(bpy.types.Gizmo):
             self._dragging = False
             return {"CANCELLED"}
         if event.type in {"ESC", "WINDOW_DEACTIVATE"} or (event.type == "RIGHTMOUSE" and event.value == "PRESS"):
-            self._restore_initial_key(context, project)
-            timeline._clear_scrub_status(context)
-            self._dragging = False
+            self.exit(context, True)
             return {"CANCELLED"}
-        value = layout.geometry.angle_from_x(event.mouse_region_x)
+        rail = layout.geometry.rail
         if event.type == "MOUSEMOVE":
             now = time.monotonic()
-            if now - self._last_preview_time >= timeline._SCRUB_PREVIEW_INTERVAL:
-                timeline._set_seek(context, project, value)
+            preview = now - self._last_preview_time >= timeline._SCRUB_PREVIEW_INTERVAL
+            _scrub_from_x(
+                context, project, rail, event.mouse_region_x, preview=preview
+            )
+            if preview:
                 self._last_preview_time = now
-            else:
-                timeline._set_seek_position_only(context, project, value)
             _set_status(context, project)
         if event.type == "LEFTMOUSE" and event.value == "RELEASE":
-            timeline._settle_seek(context, project, value)
+            _scrub_from_x(
+                context, project, rail, event.mouse_region_x, settle=True
+            )
             timeline._clear_scrub_status(context)
             self._dragging = False
             return {"FINISHED"}

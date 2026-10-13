@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import contextlib
+
 import bpy
 
 
@@ -41,10 +43,14 @@ TRANSLATIONS = {
         ("*", "Light Starts"): "光り始め",
         ("*", "Side Light 90°"): "真横光 90°",
         ("*", "Full Light"): "全体が明部",
+        ("*", "Preview only"): "プレビューのみ",
         ("*", "Sweep %s · Light yaw %s"): "進行 %s・実ライト角 %s",
         ("*", "Open Quick SDF Paint to paint"): "Quick SDF Paintを開いてペイントしてください",
         ("*", "Paint Light or Shadow and keep all light angles consistent"): "明部または影を塗り、全角度の整合性を自動で保ちます",
         ("*", "Advanced"): "詳細設定",
+        ("*", "UI Settings"): "UI 設定",
+        ("*", "Bottom UI Scale"): "下部 UI の倍率",
+        ("*", "Save Preferences"): "プリファレンスを保存",
         ("*", "Editing %s"): "%sを編集中",
         ("*", "Choose the preview that matches the face UV"): "顔のUVに合うプレビューを選択してください",
         ("*", "Whole Texture"): "テクスチャ全体",
@@ -187,20 +193,16 @@ def register_translations() -> None:
     global _REGISTERED
     if _REGISTERED:
         return
-    try:
+    with contextlib.suppress(RuntimeError):
         bpy.app.translations.unregister(TRANSLATION_KEY)
-    except RuntimeError:
-        pass
     bpy.app.translations.register(TRANSLATION_KEY, TRANSLATIONS)
     _REGISTERED = True
 
 
 def unregister_translations() -> None:
     global _REGISTERED
-    try:
+    with contextlib.suppress(RuntimeError):
         bpy.app.translations.unregister(TRANSLATION_KEY)
-    except RuntimeError:
-        pass
     _REGISTERED = False
 
 

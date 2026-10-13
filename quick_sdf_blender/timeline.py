@@ -71,6 +71,13 @@ def _format_progress(angle: float) -> str:
     return f"{value}%"
 
 
+PREVIEW_YAW_KEY = "quick_sdf_preview_yaw"
+_PREVIEW_YAW_BEHIND = 180.0
+_PREVIEW_YAW_FRONT = 0.0
+_AUTHORING_YAW_START = 120.0
+_AUTHORING_YAW_END = 60.0
+
+
 def _physical_light_yaw(angle: float) -> float:
     """Return horizontal light yaw in degrees from the character's front.
 
@@ -83,6 +90,55 @@ def _physical_light_yaw(angle: float) -> float:
     progress = _progress_percent(angle) / 100.0
     front_dot = max(-1.0, min(1.0, progress - 0.5))
     return math.degrees(math.acos(front_dot))
+
+
+def _authoring_angle_for_yaw(yaw: float) -> float | None:
+    """Return the 0..90 authoring angle for a baked yaw, or None outside it."""
+
+    value = float(yaw)
+    if value < _AUTHORING_YAW_END - 1.0e-4 or value > _AUTHORING_YAW_START + 1.0e-4:
+        return None
+    front_dot = math.cos(math.radians(max(_AUTHORING_YAW_END, min(_AUTHORING_YAW_START, value))))
+    return max(0.0, min(90.0, (front_dot + 0.5) * 90.0))
+
+
+# Each preview tail uses 5%: 4% for the editable-looking transition nearest
+# the authoring boundary, 1% for the mostly constant shadow/light remainder.
+# These knots affect display/hit testing only, never baking or export encoding.
+_RAIL_YAW_KNOTS = (
+    (0.0, 180.0), (0.01, 130.0), (0.05, 120.0),
+    (0.95, 60.0), (0.99, 50.0), (1.0, 0.0),
+)
+
+
+def _yaw_from_rail(rail: Rect, x: float) -> float:
+    """Piecewise-linear UI mapping: compressed tails, expanded authoring lane."""
+
+    span = max(1.0, rail.x1 - rail.x0)
+    factor = max(0.0, min(1.0, (float(x) - rail.x0) / span))
+    for (start, behind), (end, front) in zip(_RAIL_YAW_KNOTS, _RAIL_YAW_KNOTS[1:]):
+        if factor <= end:
+            return behind + (factor - start) / (end - start) * (front - behind)
+    return _PREVIEW_YAW_FRONT
+
+
+def _x_for_yaw(rail: Rect, yaw: float) -> float:
+    span = max(1.0, rail.x1 - rail.x0)
+    value = max(_PREVIEW_YAW_FRONT, min(_PREVIEW_YAW_BEHIND, float(yaw)))
+    for (start, behind), (end, front) in zip(_RAIL_YAW_KNOTS, _RAIL_YAW_KNOTS[1:]):
+        if value >= front:
+            factor = start + (behind - value) / (behind - front) * (end - start)
+            return rail.x0 + factor * span
+    return rail.x1
+
+
+def _stored_preview_yaw(project: Any) -> float | None:
+    try:
+        if PREVIEW_YAW_KEY not in project:
+            return None
+        return float(project[PREVIEW_YAW_KEY])
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def _scrub_status_text(angle: float) -> str:
