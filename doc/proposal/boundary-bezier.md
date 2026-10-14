@@ -1,15 +1,16 @@
-# Boundary 贝塞尔控制
+# 明暗交界线：原生 Curve 会话
 
-状态：待实施
+状态：待实施（仅记录研究结论，不授权实施）
 
 ## 结论
 
-Boundary Tool 可扩展为贝塞尔轮廓控制；优先考虑 Image Editor 内的 2D UV 编辑，3D 视图负责预览。记录可行性与建议方向，不授权实施；具体交互范围待确认。
+用 Blender 自带 Bézier Curve 作为交界线作者工具，前提是 Studio 增加 `Paint ↔ Restricted Curve Edit` 会话，并防止模式逃逸。现有 Boundary 折线编辑不是可用工具，不复活为编辑器。闭合曲线经采样、投射到目标 Mesh、转 UV 后填充当前角度的 Light/Shadow。记录可行性，具体交互（含拖动手柄时实时填还是松手再填）待确认。
 
 ## 简要细节
 
-- `boundary.py` 已有 `BezierKnot`、`cubic_bezier()`、`sample_bezier()`，尚未接入业务；持久化边界点目前仅保存 `co`。
-- 增加左右手柄及模式，旧数据保持折线形状；曲线采样成折线后复用跨角度插值、验证与填充。
-- 补充锚点／手柄绘制、选中与拖动，取消时恢复完整编辑前状态；修订 token 纳入手柄数据。
-- 修正现有采样函数漏掉中间锚点的问题，采样精度按像素误差控制；跨角度插值需处理轮廓方向及闭合起点对应。
-- 拖动仅更新轮廓预览，松手／Commit 再重建遮罩；完整 3D 手柄编辑另行评估。
+- 预览黑白／Toon 挂在脸 Mesh 的预览材质上，不依赖 Texture Paint；Curve Edit 时 Mesh 保持 Object Mode，二者可同屏。
+- Paint：维持关闭原生 overlay。Curve Edit：打开 overlay 以显示手柄，helper 曲线 `show_in_front`，Tab／确认／Esc 直接回 Paint，不停留在 Curve Object Mode。
+- 防逃逸：仅 helper 可选；active／mode 偏离则拉回 Curve Edit 或干净退回 Paint。不使用吃掉原生 Pen／手柄快捷键的阻塞 modal。
+- 吸附用 Face Project 或求值点重投射到目标 Mesh，不用 Cast 修改器。贴面为近似。
+- 可复用的只有 UV 闭合填充、岛边界、3D hit→UV；`boundary.py` 的绘制 UI、未接线的 `BezierKnot` 不作为作者层。
+- 曲线保持为可再编辑的源，写入生成层、不覆盖手绘 Coverage。
