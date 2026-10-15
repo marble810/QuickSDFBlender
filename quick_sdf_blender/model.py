@@ -238,6 +238,11 @@ class QSDFAngle(PropertyGroup):
     is_generated: BoolProperty(name="Generated", default=True)
     has_violation: BoolProperty(name="Monotonic Violation", default=False)
     dirty: BoolProperty(name="Dirty", default=False)
+    terminator_object: PointerProperty(
+        name="Terminator Curve",
+        type=bpy.types.Object,
+        options={"HIDDEN"},
+    )
 
 
 class QSDFPackingChannel(PropertyGroup):

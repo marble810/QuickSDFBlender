@@ -529,6 +529,25 @@ if bpy is not None:
         return 1.0 - v - w, v, w
 
 
+    def uv_from_mesh_hit(mesh: Any, uv_layer: Any, location: Any, face_index: int) -> Vec2 | None:
+        """Convert a local-space mesh hit to UV using loop-triangle barycentric weights."""
+
+        mesh.calc_loop_triangles()
+        for triangle in mesh.loop_triangles:
+            if triangle.polygon_index != face_index:
+                continue
+            vertices = [mesh.vertices[index].co for index in triangle.vertices]
+            weights = _barycentric_3d(location, *vertices)
+            if weights is None or min(weights) < -1.0e-5:
+                continue
+            uvs = [uv_layer.data[index].uv for index in triangle.loops]
+            return (
+                sum(weight * uv.x for weight, uv in zip(weights, uvs)),
+                sum(weight * uv.y for weight, uv in zip(weights, uvs)),
+            )
+        return None
+
+
     def _uv_from_view_event(context: Any, event: Any, project: Any) -> Vec2 | None:
         from bpy_extras import view3d_utils
 
@@ -554,20 +573,7 @@ if bpy is not None:
         layer = mesh.uv_layers.get(uv_name) if uv_name else mesh.uv_layers.active
         if layer is None:
             return None
-        mesh.calc_loop_triangles()
-        for triangle in mesh.loop_triangles:
-            if triangle.polygon_index != face_index:
-                continue
-            vertices = [mesh.vertices[index].co for index in triangle.vertices]
-            weights = _barycentric_3d(location, *vertices)
-            if weights is None or min(weights) < -1.0e-5:
-                continue
-            uvs = [layer.data[index].uv for index in triangle.loops]
-            return (
-                sum(weight * uv.x for weight, uv in zip(weights, uvs)),
-                sum(weight * uv.y for weight, uv in zip(weights, uvs)),
-            )
-        return None
+        return uv_from_mesh_hit(mesh, layer, location, int(face_index))
 
 
     def _region_for_boundary(
@@ -939,5 +945,6 @@ __all__ = [
     "sample_bezier",
     "segments_intersect",
     "uv_boundary_loops",
+    "uv_from_mesh_hit",
     "validate_curve",
 ]

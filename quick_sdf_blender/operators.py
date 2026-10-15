@@ -1043,6 +1043,12 @@ class QUICKSDF_OT_project_remove(bpy.types.Operator):
         except (ImportError, RuntimeError, ReferenceError) as exc:
             self.report({"ERROR"}, f"Could not restore preview material: {exc}")
             return {"CANCELLED"}
+        try:
+            from .curve_session import remove_terminator_objects  # type: ignore[import-not-found]
+
+            remove_terminator_objects(project)
+        except (ImportError, ReferenceError, RuntimeError):
+            pass
         runtime.remove_project_images(project)
         runtime.remove_face_region_attribute(project)
         context.scene.quick_sdf_projects.remove(index)
@@ -1694,6 +1700,35 @@ def _record_aux_image_change(
     from .model import mark_aux_mask_changed
 
     mark_aux_mask_changed(project, item)
+    return True
+
+
+def record_display_layer_change(project, angle_item, before, after, label: str) -> bool:
+    """Publish one generated Display edit without touching Coverage."""
+
+    import numpy as np
+
+    image = runtime.resolve_display_image(project, angle_item)
+    if image is None:
+        raise ValueError("The active angle Display image is missing")
+    after = np.asarray(after, dtype=np.uint8)
+    before = np.asarray(before, dtype=np.uint8)
+    if before.shape == after.shape and np.array_equal(before, after):
+        return False
+    history = _HISTORIES.setdefault(str(project.uuid), History(compression_level=1))
+    had_redo = history.can_redo
+    transaction = history.begin_transaction(label)
+    transaction.add_delta(f"display:{angle_item.uuid}", before, after)
+    if transaction.needs_rollback or not transaction.commit():
+        if history.active_transaction is transaction:
+            transaction.rollback()
+        raise RuntimeError("This terminator fill is too large for the Quick SDF Undo history")
+    if had_redo:
+        _purge_history_orphans(str(project.uuid))
+    _UNDO_FENCES.add(str(project.uuid))
+    runtime.write_image_gray8(image, after)
+    angle_item.dirty = True
+    project.dirty = True
     return True
 
 

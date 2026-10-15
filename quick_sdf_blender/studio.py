@@ -10,14 +10,15 @@ from __future__ import annotations
 
 from array import array
 import base64
+import contextlib
 from dataclasses import dataclass
 import ctypes
 import json
 import time
 from typing import Any, Callable
 
-import bpy
-from bpy.app.handlers import persistent
+import bpy  # type: ignore[import-not-found]
+from bpy.app.handlers import persistent  # type: ignore[import-not-found]
 
 
 WORKSPACE_PROJECT_TAG = "quick_sdf_studio_project_uuid"
@@ -113,6 +114,18 @@ class StudioSession:
     provisional_history: Any = None
     provisional_rebuild_after_save: bool = False
     provisional_rebuild_angle: float = -1.0
+    curve_edit_active: bool = False
+    curve_object_name: str = ""
+    curve_edit_reconciling: bool = False
+    curve_previous_hide_select: tuple[tuple[str, bool], ...] = ()
+    curve_previous_use_snap: bool | None = None
+    curve_previous_snap_individual: tuple[str, ...] = ()
+    curve_previous_use_snap_translate: bool | None = None
+    curve_previous_use_snap_nonedit: bool | None = None
+    curve_previous_depth_mode: str = ""
+    curve_previous_curve_type: str = ""
+    curve_previous_surface_offset: float | None = None
+    curve_previous_project_only_selected: bool | None = None
 
 
 @dataclass(slots=True)
@@ -277,6 +290,11 @@ def select_paint_key(
     """Select one edit key and atomically synchronize every paint surface."""
 
     session = active_session(context)
+    if session is not None and session.curve_edit_active and not session.curve_edit_reconciling:
+        from .curve_session import leave_curve_edit  # type: ignore[import-not-found]
+
+        leave_curve_edit(context, apply=False)
+    session = active_session(context)
     if session is not None and session.provisional_uuid and not session.provisional_promoting:
         discard_provisional(context, project)
 
@@ -327,6 +345,10 @@ def enter_aux_mask_edit(context: Any, project: Any, mask_uuid: str) -> bool:
     session = active_session(context)
     if session is None or session.project_uuid != str(project.uuid):
         raise StudioError("Open Quick SDF Paint before editing an additional mask")
+    if session.curve_edit_active:
+        from .curve_session import leave_curve_edit  # type: ignore[import-not-found]
+
+        leave_curve_edit(context, apply=False)
     discard_provisional(context, project)
     from . import runtime
 
@@ -1872,6 +1894,19 @@ def _sync_native_studio_overlays(_scene: Any, _depsgraph: Any) -> None:
     session = _SESSION
     if session is None or session.projection_settings_suspended:
         return
+    if session.curve_edit_active:
+        window = find_window(session.window_pointer)
+        if window is None:
+            return
+        changed = False
+        for space in _studio_view_spaces(window):
+            overlay = getattr(space, "overlay", None)
+            if overlay is not None and not overlay.show_overlays:
+                overlay.show_overlays = True
+                changed = True
+        if changed:
+            tag_studio_redraw()
+        return
     window = find_window(session.window_pointer)
     if window is None or window.workspace.name != session.workspace_name:
         return
@@ -2794,6 +2829,10 @@ def _configure_session_target(
 ) -> Any:
     """Synchronize an already-built Studio workspace to one project."""
 
+    if session.curve_edit_active:
+        from .curve_session import leave_curve_edit  # type: ignore[import-not-found]
+
+        leave_curve_edit(context, apply=False)
     scene, project_index, obj, _preflight_image = _preflight_studio_target(context, project)
     window = find_window(session.window_pointer)
     workspace = bpy.data.workspaces.get(session.workspace_name)
@@ -3152,6 +3191,13 @@ def exit_studio(
     context = context or bpy.context
     window = find_window(session.window_pointer)
     project = resolve_session_project(session)
+    if session.curve_edit_active:
+        try:
+            from .curve_session import leave_curve_edit  # type: ignore[import-not-found]
+
+            leave_curve_edit(context, apply=False, restore_paint=False)
+        except (AttributeError, ImportError, ReferenceError, RuntimeError, ValueError):
+            session.curve_edit_active = False
     discard_provisional(context, project)
     _remove_timeline_hosts()
     if project is not None and session.editing_aux_mask_uuid:
@@ -3189,7 +3235,9 @@ def exit_studio(
         target = project.target_object if project else None
         view_area = next((area for area in window.screen.areas if area.type == "VIEW_3D"), None)
         if target is not None and view_area is not None and target.mode == "TEXTURE_PAINT":
-            context.view_layer.objects.active = target
+            view_layer = getattr(context, "view_layer", None)
+            if view_layer is not None:
+                view_layer.objects.active = target
             _mode_set(context, window, view_area, "OBJECT")
     except (ReferenceError, RuntimeError, StudioError):
         pass
@@ -3197,14 +3245,10 @@ def exit_studio(
     if previous_workspace is not None:
         window.workspace = previous_workspace
     if scene is not None:
-        try:
+        with contextlib.suppress(AttributeError, ReferenceError):
             _restore_paint_settings(scene, session)
-        except (AttributeError, ReferenceError):
-            pass
-    try:
+    with contextlib.suppress(AttributeError, ReferenceError, RuntimeError):
         _restore_selection_and_mode(context, session, window)
-    except (AttributeError, ReferenceError, RuntimeError):
-        pass
     _SESSION = None
     if remove_workspace and studio_workspace is not None and window.workspace is not studio_workspace:
         _remove_workspace(studio_workspace)
@@ -3235,6 +3279,13 @@ def _save_pre(_unused: Any) -> None:
     # Provisional canvases and structural Redo images are process-only state.
     # Never serialize them into the .blend. A ready angle is reconstructed
     # after saving so the artist can continue without changing the playhead.
+    if _SESSION.curve_edit_active:
+        try:
+            from .curve_session import leave_curve_edit  # type: ignore[import-not-found]
+
+            leave_curve_edit(bpy.context, apply=False, restore_paint=False)
+        except (AttributeError, ImportError, ReferenceError, RuntimeError, ValueError):
+            _SESSION.curve_edit_active = False
     if _SESSION.provisional_uuid:
         _SESSION.provisional_rebuild_after_save = bool(
             _SESSION.provisional_state in {"PREPARING", "READY"}
@@ -3363,10 +3414,8 @@ def _save_post(_unused: Any) -> None:
 
 def _exit_after_failed_save_resume() -> None:
     if _SESSION is not None and _SESSION.preview_suspended:
-        try:
+        with contextlib.suppress(AttributeError, ReferenceError, RuntimeError, StudioError):
             exit_studio(bpy.context, reason="save-resume-failed")
-        except (AttributeError, ReferenceError, RuntimeError, StudioError):
-            pass
     return None
 
 

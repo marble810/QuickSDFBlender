@@ -15,9 +15,9 @@ bl_info = {
 
 
 def _modules():
-    from . import boundary, lighting_indicator, model, operators, preferences, preview, runtime, timeline, ui, viewport_lighting
+    from . import boundary, curve_session, lighting_indicator, model, operators, preferences, preview, runtime, timeline, ui, viewport_lighting
 
-    return (preferences, model, runtime, operators, boundary, preview, timeline, ui, viewport_lighting, lighting_indicator)
+    return (preferences, model, runtime, operators, boundary, curve_session, preview, timeline, ui, viewport_lighting, lighting_indicator)
 
 
 def register():
@@ -30,7 +30,7 @@ def register():
             for cls in getattr(module, "CLASSES", ()):  # registration order is public API
                 bpy.utils.register_class(cls)
                 registered.append(cls)
-        from . import i18n, model, operators, preview, runtime, studio, timeline, tools, ui
+        from . import curve_session, i18n, model, operators, preview, runtime, studio, timeline, tools, ui
 
         operators.register_macros()
         model.register_properties()
@@ -42,13 +42,14 @@ def register():
         from . import viewport_lighting
         viewport_lighting.register_overlay()
         tools.register_tools()
+        curve_session.register_curve_session()
         ui.register_keymaps()
     except Exception:
         # Registration can fail after RNA properties, handlers, draw callbacks or
         # keymaps have been installed.  Unwind those resources before removing
         # their PropertyGroup classes; otherwise Blender retains dangling RNA
         # references and a second enable attempt fails.
-        from . import i18n, model, operators, preview, runtime, studio, timeline, tools, ui
+        from . import curve_session, i18n, model, operators, preview, runtime, studio, timeline, tools, ui
 
         operators.shutdown_bake_job(message="Base update cancelled during add-on cleanup")
         operators.shutdown_export_job(message="Export cancelled during add-on cleanup")
@@ -58,6 +59,7 @@ def register():
         for cleanup in (
             viewport_lighting.unregister_overlay,
             ui.unregister_keymaps,
+            curve_session.unregister_curve_session,
             studio.unregister_studio,
             tools.unregister_tools,
             timeline.unregister_timeline,
@@ -81,11 +83,12 @@ def register():
 def unregister():
     import bpy
 
-    from . import i18n, live_preview, model, operators, preview, runtime, studio, timeline, tools, ui
+    from . import curve_session, i18n, live_preview, model, operators, preview, runtime, studio, timeline, tools, ui
 
     operators.shutdown_bake_job(message="Base update cancelled because the add-on was disabled")
     operators.shutdown_export_job(message="Export cancelled because the add-on was disabled")
     ui.unregister_keymaps()
+    curve_session.unregister_curve_session()
     studio.unregister_studio()
     tools.unregister_tools()
     from . import viewport_lighting

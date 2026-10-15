@@ -90,6 +90,12 @@ def _draw_tool_settings(context: Any, layout: Any, _tool: Any) -> None:
             back.mask_uuid = editing_aux_uuid
     else:
         row.separator()
+        if _operator_exists("quicksdf.curve_edit_enter"):
+            row.operator(
+                "quicksdf.curve_edit_enter",
+                text="Terminator",
+                icon="CURVE_BEZCURVE",
+            )
     if not editing_aux_uuid and _operator_exists("quicksdf.mirror_toggle"):
         row.operator(
             "quicksdf.mirror_toggle", text="Mirror On", icon="MOD_MIRROR",

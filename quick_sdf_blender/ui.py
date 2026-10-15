@@ -63,6 +63,16 @@ def tag_editors_for_redraw() -> None:
 
 def _project_for_context(context: Any) -> Any | None:
     active = getattr(context, "active_object", None)
+    try:
+        from .curve_session import is_curve_edit_active, is_terminator_object  # type: ignore[import-not-found]
+        from .studio import active_session, resolve_session_project
+
+        if is_curve_edit_active(context) or is_terminator_object(active):
+            project = resolve_session_project(active_session(context))
+            if project is not None:
+                return project
+    except (ImportError, AttributeError, ReferenceError, RuntimeError):
+        pass
     projects = getattr(context.scene, "quick_sdf_projects", ())
     for project in projects:
         if project.target_object == active:
@@ -401,8 +411,24 @@ class QSDF_PT_launcher(bpy.types.Panel):
             status = layout.box()
             status.label(text=tr("Editing %s") % project.target_object.name, icon="BRUSH_DATA")
             editing_aux = _draw_aux_edit_status(status, context, project)
-            if not editing_aux:
+            try:
+                from .curve_session import is_curve_edit_active  # type: ignore[import-not-found]
+
+                curve_edit = is_curve_edit_active(context)
+            except (ImportError, AttributeError, ReferenceError, RuntimeError):
+                curve_edit = False
+            if curve_edit:
+                status.label(text="Terminator Curve", icon="CURVE_BEZCURVE")
+                row = status.row(align=True)
+                row.operator("quicksdf.curve_edit_confirm", text="Fill & Back to Paint", icon="CHECKMARK")
+                row.operator("quicksdf.curve_edit_cancel", text="Back to Paint", icon="LOOP_BACK")
+            elif not editing_aux:
                 _paint_buttons(status, project)
+                status.operator(
+                    "quicksdf.curve_edit_enter",
+                    text="Terminator Curve",
+                    icon="CURVE_BEZCURVE",
+                )
                 status.prop(project, "limit_paint_to_face_uv")
                 padding = status.row()
                 padding.enabled = bool(project.limit_paint_to_face_uv)

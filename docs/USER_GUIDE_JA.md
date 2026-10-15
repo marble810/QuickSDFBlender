@@ -30,9 +30,9 @@ Quick SDF Paintは、トゥーンレンダリング用の顔影スレッショ�
 
 ## インストール
 
-正式対応はBlender 5.1／5.2 LTS、Windows x64です。同じExtension ZIPを両バージョンで使用できます。
+対応環境はBlender 5.1／5.2 LTS（Windows x64／macOS）です。同じExtension ZIPを両バージョンで使用できます。
 
-1. [GitHub Releases](https://github.com/yeczrtu/QuickSDFBlender/releases/latest)から `quick_sdf_blender-0.9.0-windows-x64.zip` を取得します。
+1. [GitHub Releases](https://github.com/marble810/QuickSDFBlender/releases/latest)からExtension ZIPを取得します。
 2. Blenderの `編集` → `プリファレンス` → `エクステンションを入手` を開きます。
 3. 右上のメニューから `ディスクからインストール` を選びます。
 4. 取得したZIPを展開せずに選択します。
@@ -141,6 +141,9 @@ Mirrorは既定でONです。通常は右側の0～100%だけを編集し、反�
 | `←` / `→` | 前／次の角度キー |
 | `Home` | 0%（Light Starts）へ戻る |
 | `Ctrl + Z` / `Ctrl + Shift + Z` | 一筆をUndo／Redo |
+| `Terminator` | 3DでBlender標準のBézier Curveを編集し、閉じた交界線を現在角度のLight／Shadowへ塗りつぶす。手描きCoverageは残る |
+
+Enter／Tabで塗りつぶしてペイントに戻ります。Escは塗らずに戻ります。Curve Edit中は顔MeshがObject Modeのままプレビューされ、Pen／ハンドル操作はBlender標準です。
 
 ## 5. プレビューする
 
@@ -197,7 +200,7 @@ Imageの欠損、無効なUV、書き込み権限、ディスク障害などで�
 - `Adjust Shadow Guide`：`Shadow Amount`を0～100で調整し、手描き部分を保持して更新
 - `Use This View as Front`：顔の正面方向が合わない場合に現在のビューを使う
 - `Rebake Base`
-- 非破壊Boundary Tool
+- 明暗交界線（Studioの `Terminator Curve`。原生Bézierをソースにし、生成層へ書く）
 - `Review Export Adjustments`：書き出し時だけ調整された画素を読み取り専用で確認
 - `Output Packing`：R/G/B/Aへ格納する内容をProject単位で変更
 - `Additional Masks`：全角度に共通する領域／強度マスクを編集・読み込み
