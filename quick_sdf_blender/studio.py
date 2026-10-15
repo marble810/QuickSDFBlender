@@ -11,7 +11,7 @@ from __future__ import annotations
 from array import array
 import base64
 import contextlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import ctypes
 import json
 import time
@@ -126,6 +126,11 @@ class StudioSession:
     curve_previous_curve_type: str = ""
     curve_previous_surface_offset: float | None = None
     curve_previous_project_only_selected: bool | None = None
+    curve_undo_stack: list[Any] = field(default_factory=list)
+    curve_redo_stack: list[Any] = field(default_factory=list)
+    curve_tracked_state: Any = None
+    curve_pending_state: Any = None
+    curve_pending_time: float = 0.0
 
 
 @dataclass(slots=True)

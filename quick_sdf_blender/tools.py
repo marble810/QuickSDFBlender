@@ -25,6 +25,9 @@ from .ui import widgets
 # a tool that does not exist in the other editor and reports a warning.
 VIEW_TOOL_ID = "quicksdf.paint_view"
 IMAGE_TOOL_ID = VIEW_TOOL_ID
+# Curve Edit tool for the terminator. It reuses Blender's own Curve Pen key-map
+# and only takes over the plain LMB press, which casts a point onto the face.
+CURVE_TOOL_ID = "quicksdf.sdf_curve"
 _REGISTERED: list[type[WorkSpaceTool]] = []
 _ADDON_KEYMAPS: list[tuple[Any, Any]] = []
 
@@ -76,6 +79,39 @@ def _draw_tool_settings(context: Any, layout: Any, _tool: Any) -> None:
     )
 
 
+# Mirrors "3D View Tool: Edit Curve, Curve Pen" (builtin.pen), so the pen keeps
+# its modifier actions while the plain press casts onto the paint surface.
+_SDF_CURVE_KEYMAP = (
+    ("quicksdf.sdf_curve_pen", {"type": "LEFTMOUSE", "value": "PRESS"}, None),
+    ("quicksdf.curve_undo", {"type": "Z", "value": "PRESS", "ctrl": True}, None),
+    (
+        "quicksdf.curve_redo",
+        {"type": "Z", "value": "PRESS", "ctrl": True, "shift": True},
+        None,
+    ),
+    (
+        "curve.pen",
+        {"type": "LEFTMOUSE", "value": "PRESS", "ctrl": True},
+        {"properties": [("insert_point", True), ("delete_point", True)]},
+    ),
+    (
+        "curve.pen",
+        {"type": "LEFTMOUSE", "value": "DOUBLE_CLICK"},
+        {"properties": [("toggle_vector", True), ("cycle_handle_type", True)]},
+    ),
+)
+
+
+def _draw_curve_tool_settings(_context: Any, layout: Any, tool: Any) -> None:
+    layout.label(text="Click the face to cast a point", icon="CURVE_BEZCURVE")
+    try:
+        properties = tool.operator_properties("quicksdf.sdf_curve_pen")
+    except (AttributeError, TypeError):
+        properties = None
+    if properties is not None:
+        layout.prop(properties, "extrude_handle")
+
+
 _PAINT_KEYMAP = (
     ("quicksdf.range_paint", {"type": "LEFTMOUSE", "value": "PRESS"}, None),
     ("quicksdf.range_paint_invert", {"type": "LEFTMOUSE", "value": "PRESS", "ctrl": True}, None),
@@ -114,7 +150,24 @@ class QSDF_WST_image_paint(WorkSpaceTool):
     draw_settings = staticmethod(_draw_tool_settings)
 
 
+class QSDF_WST_sdf_curve(WorkSpaceTool):
+    bl_space_type = "VIEW_3D"
+    bl_context_mode = "EDIT_CURVE"
+    bl_idname = CURVE_TOOL_ID
+    bl_label = "SDF Curve"
+    bl_description = (
+        "Cast terminator curve points onto the face; existing points, handles, "
+        "and the other Curve Pen actions stay native"
+    )
+    bl_icon = "ops.curve.pen"
+    bl_widget = None
+    bl_keymap = _SDF_CURVE_KEYMAP
+    draw_settings = staticmethod(_draw_curve_tool_settings)
+
+
 TOOLS = (QSDF_WST_view_paint, QSDF_WST_image_paint)
+# Registered in a separate context mode, so it is not part of TOOLS.
+CURVE_TOOLS = (QSDF_WST_sdf_curve,)
 
 
 def register_tools() -> None:
@@ -123,6 +176,9 @@ def register_tools() -> None:
     try:
         for tool in TOOLS:
             bpy.utils.register_tool(tool, after={"builtin.brush"}, separator=True)
+            _REGISTERED.append(tool)
+        for tool in CURVE_TOOLS:
+            bpy.utils.register_tool(tool, after={"builtin.pen"}, separator=True)
             _REGISTERED.append(tool)
         keyconfig = getattr(
             getattr(bpy.context, "window_manager", None), "keyconfigs", None
@@ -201,6 +257,7 @@ CLASSES: tuple[type, ...] = ()
 
 
 __all__ = [
-    "CLASSES", "IMAGE_TOOL_ID", "QSDF_WST_image_paint", "QSDF_WST_view_paint", "TOOLS",
-    "VIEW_TOOL_ID", "activate_tools", "register_tools", "unregister_tools",
+    "CLASSES", "CURVE_TOOL_ID", "CURVE_TOOLS", "IMAGE_TOOL_ID", "QSDF_WST_image_paint",
+    "QSDF_WST_sdf_curve", "QSDF_WST_view_paint", "TOOLS", "VIEW_TOOL_ID", "activate_tools",
+    "register_tools", "unregister_tools",
 ]

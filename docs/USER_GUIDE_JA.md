@@ -143,7 +143,7 @@ Mirrorは既定でONです。通常は右側の0～100%だけを編集し、反�
 | `Ctrl + Z` / `Ctrl + Shift + Z` | 一筆をUndo／Redo |
 | `Terminator` | 3DでBlender標準のBézier Curveを編集し、閉じた交界線を現在角度のLight／Shadowへ塗りつぶす。手描きCoverageは残る |
 
-Enter／Tabで塗りつぶしてペイントに戻ります。Escは塗らずに戻ります。Curve Edit中は顔MeshがObject Modeのままプレビューされ、Pen／ハンドル操作はBlender標準です。
+Enter／Tabで塗りつぶしてペイントに戻ります。Escは塗らずに戻ります。Curve Edit中は顔MeshがObject Modeのままプレビューされ、Pen／ハンドル操作はBlender標準です。Curve Editでは `SDF Curve` ツールが自動で選ばれ、顔をクリックするとその面へCastされた制御点が追加されます。既存の制御点やハンドルをクリックした場合はBlender標準のCurve Penがそのまま動きます。Curve Edit中の `Ctrl + Z` / `Ctrl + Shift + Z` は交界線の編集だけをUndo／Redoし、Curve Editから抜けたりペイントのUndo履歴を消したりしません。
 
 ## 5. プレビューする
 
