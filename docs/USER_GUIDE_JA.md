@@ -105,7 +105,7 @@ Mirrorの推定に確信がない場合だけ、`Whole Texture`、`Paired Island
 
 一時Canvasへ塗った8-bit値はそのまま蓄積されますが、Customキーとして確定するのは、画素が0.5境界を実際に越えて書き出し結果が変わった時だけです。低いStrengthで複数回塗る場合も、境界を越えるまでは一時Canvasのままです。Customキーが確定すると、筆跡、Coverage、ほかのキーへの自動反映をまとめて1回のUndo／Redoとして扱います。上限は片側16キーです。
 
-通常は、必要な角度へプレイヘッドを動かしてそのまま塗るだけで十分です。数値で厳密に追加したい場合だけ、`Advanced` → `Angle Keys` → `Add Angle…` を使います。追加キーは現在の角度補間から作られます。
+通常は、必要な角度へプレイヘッドを動かしてそのまま塗るだけで十分です。数値で厳密に追加したい場合だけ、`Quick SDF`パネルの `Angle Keys` → `Add Angle…` を使います。追加キーは現在の角度補間から作られます。
 
 通常は、影ガイドが作られた9キーをクリックして、おかしい部分だけを修正すれば十分です。タイムラインには0、12.5、25、37.5、50、62.5、75、87.5、100%と表示されます。0%は `Light Starts`、100%は `Full Light` という制作段階で、物理的なライト角度ではありません。中央50%は追加の目印ではなく、ライトが厳密に真横を向く `Side Light 90°` の編集キーです。
 
@@ -121,12 +121,12 @@ Mirrorの推定に確信がない場合だけ、`Whole Texture`、`Paired Island
 
 角度間に矛盾が残っていても、Export時に書き出し用コピーだけを自動調整します。元のCanvasは変更されないため、PropagateやValidateを押す必要はありません。選択中キー、ほかの角度への自動反映、必要なら自動キー作成までをまとめて1回のUndo／Redoとして扱います。
 
-Mirrorは既定でONです。通常は右側の0～100%だけを編集し、反対側の出力は自動生成します。左右を別々に描きたい場合だけ、`Advanced` → `Break Mirror`を使います。
+Mirrorは既定でONです。通常は右側の0～100%だけを編集し、反対側の出力は自動生成します。左右を別々に描きたい場合だけ、`Quick SDF`パネルの `Break Mirror`を使います。
 
 ### UV境界の余白（Padding）
 
 - `Limit to Face UV`をONにして `Paint Padding (px)` を設定すると、2D／3Dの一筆で変更したUV境界の色が、その外側の余白へ自動延長されます。OFFの場合はUV外へ自由に塗れ、余白の自動延長は行いません。
-- Light Sweepの初期余白は、Project作成前の `Advanced` → `Guide Padding (px)` で設定します。作成後は `Advanced` → `Adjust Shadow Guide` の同じ項目を変更して `Update Shadow Guide` を押します。手描き修正は維持されます。
+- Light Sweepの初期余白は、Project作成前の `Quick SDF`パネル → `Guide Padding (px)` で設定します。作成後は `Adjust Shadow Guide` の同じ項目を変更して `Update Shadow Guide` を押します。手描き修正は維持されます。
 - どちらも0～256pxで、既定の `0` は余白なしです。長さは作業テクスチャの実ピクセル数です。UV内の影形状は膨らませず、最も近いUV境界の色を外側へコピーします。画像端では切り詰められます。
 - Paint Paddingの変更は次の筆から適用され、既存の余白は消去しません。近くに別のUVアイランドがある場合は、余白が対象外のUVへ届かない長さにしてください。
 
@@ -188,14 +188,17 @@ Imageの欠損、無効なUV、書き込み権限、ディスク障害などで�
 
 出力形式は16-bit RGBA PNGのみです。エンジンではNon-Color／Dataテクスチャとして扱ってください。
 
-## Advancedを使う場面
+## 詳細設定を使う場面
 
-`Advanced`は、3D Viewの `N` → `Quick SDF` パネル下部に折り畳まれています。通常作業では開く必要はありません。
+`Quick SDF`パネルには、日常のペイント操作だけでなく、次の設定も平置きされています。通常作業では触る必要はありません。
+
+`Front`（前方軸）だけは、見出し左の小さな矢印で開閉できます。設定後は畳んでおくとパネルが短くなります。開閉状態はユーザー設定として保存され、`UI Settings` → `Front Axis Buttons` でも切り替えられます。
 
 ここには次の設定があります。
 
 - 作成前：解像度、初期化方法、既存Maskの指定
-- 作成後：Object、Face Area、UV Map、Forward／Up軸
+- 作成後：Object、Face Area、UV Map、解像度
+- `Front`：世界軸6方向（+X／-X、+Y／-Y、+Z／-Z）を3列で選びます。既定はBlenderの正面である-Yです。プロジェクト作成後は `Use This View as Front` で現在のビューを正面にできます
 - Mirror方式と編集側、`Break Mirror`
 - `Adjust Shadow Guide`：`Shadow Amount`を0～100で調整し、手描き部分を保持して更新
 - `Use This View as Front`：顔の正面方向が合わない場合に現在のビューを使う
@@ -211,7 +214,7 @@ Imageの欠損、無効なUV、書き込み権限、ディスク障害などで�
 
 ### Output Packingを変更する
 
-通常はlilToon設定のまま使用します。別のシェーダーが異なるチャンネル構成を要求する場合だけ、`Advanced` → `Output Packing`を開きます。
+通常はlilToon設定のまま使用します。別のシェーダーが異なるチャンネル構成を要求する場合だけ、`Quick SDF`パネル下部の `Output Packing`を開きます。
 
 1. `Customize`を押します。
 2. R/G/B/Aの各行でSourceを選びます。
@@ -241,7 +244,7 @@ Project作成時に、次の2枚が自動で用意されます。
 - `SDF Area`：Face AreaのUV領域が白、領域外が黒。白い場所で角度別の顔影制御を使います。
 - `Shadow Strength`：初期状態は全面白。黒く塗った場所では顔影を無効化します。
 
-`Advanced` → `Additional Masks`でマスクを選択し、`Edit Mask`を押すと、同じ3D／2D Texture Paint環境で編集できます。この間は角度Timelineを操作できず、「このマスクは全角度共通」と表示されます。上部の`White`／`Black`で塗り、`Back to Face Shadow`で角度別の顔影編集へ戻ります。
+`Additional Masks`でマスクを選択し、`Edit Mask`を押すと、同じ3D／2D Texture Paint環境で編集できます。この間は角度Timelineを操作できず、「このマスクは全角度共通」と表示されます。上部の`White`／`Black`で塗り、`Back to Face Shadow`で角度別の顔影編集へ戻ります。
 
 - `Fill White`／`Fill Black`：選択中マスクを一色で埋める
 - `Reset SDF Area from UV`：SDF AreaをFace AreaのUV占有領域から作り直す
@@ -271,7 +274,7 @@ Quick SDF Paintワークスペース内で `Quick SDF Paint` ツールが選ば�
 
 ### 角度エラーで書き出せない
 
-角度のつながりはExport時に非破壊で自動調整するため、角度矛盾だけで書き出しを停止しません。`Advanced` → `Review Export Adjustments`で調整箇所を確認できます。
+角度のつながりはExport時に非破壊で自動調整するため、角度矛盾だけで書き出しを停止しません。`Review Export Adjustments`で調整箇所を確認できます。
 
 ### 左右の結果が合わない
 
@@ -279,7 +282,7 @@ Quick SDF Paintワークスペース内で `Quick SDF Paint` ツールが選ば�
 
 ### Materialが元に戻らない
 
-`Advanced` → `Review / Recovery` → `Restore Materials`を押してください。
+`Review / Recovery` → `Restore Materials`を押してください。
 
 ### 保存し直したらStop表示から始まった
 

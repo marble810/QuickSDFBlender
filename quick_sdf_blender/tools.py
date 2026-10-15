@@ -13,6 +13,11 @@ from typing import Any
 import bpy
 from bpy.types import WorkSpaceTool
 
+from . import runtime
+from .i18n import tr
+from .ui import context as ui_context
+from .ui import widgets
+
 
 # Blender synchronizes texture-paint brush tool IDs between VIEW_3D and
 # IMAGE_EDITOR (wm_toolsystem.cc: toolsystem_brush_sync_for_texture_paint).
@@ -24,108 +29,51 @@ _REGISTERED: list[type[WorkSpaceTool]] = []
 _ADDON_KEYMAPS: list[tuple[Any, Any]] = []
 
 
-def _operator_exists(idname: str) -> bool:
-    namespace, name = idname.split(".", 1)
-    return hasattr(getattr(bpy.ops, namespace, object()), name)
-
-
 def _project(context: Any) -> Any | None:
-    try:
-        from .studio import active_session, resolve_session_project
-
-        return resolve_session_project(active_session(context))
-    except (ImportError, AttributeError, ReferenceError):
-        return None
+    return ui_context.session_project(context)
 
 
 def _draw_tool_settings(context: Any, layout: Any, _tool: Any) -> None:
     project = _project(context)
     if project is None:
-        layout.label(text="Open Quick SDF Paint to paint", icon="INFO")
+        layout.label(text=tr("Open Quick SDF Paint to paint"), icon="INFO")
         return
 
-    editing_aux_uuid = ""
-    session = None
-    try:
-        from .studio import active_session
-
-        session = active_session(context)
-        editing_aux_uuid = str(
-            getattr(session, "editing_aux_mask_uuid", "")
-            if session is not None
-            else ""
-        )
-    except (ImportError, AttributeError, ReferenceError, RuntimeError):
-        pass
-
+    mask_uuid = ui_context.editing_aux_mask_uuid(context, project)
     row = layout.row(align=True)
-    if _operator_exists("quicksdf.paint_value_set"):
-        light = row.operator(
-            "quicksdf.paint_value_set",
-            text="White" if editing_aux_uuid else "Light",
-            icon="RADIOBUT_ON" if editing_aux_uuid else "LIGHT_SUN",
-            depress=int(project.paint_value) == 1,
-        )
-        light.value = 1
-        shadow = row.operator(
-            "quicksdf.paint_value_set",
-            text="Black" if editing_aux_uuid else "Shadow",
-            icon="RADIOBUT_OFF" if editing_aux_uuid else "SHADING_SOLID",
-            depress=int(project.paint_value) == 0,
-        )
-        shadow.value = 0
+    widgets.paint_value_row(row, project, mask=bool(mask_uuid), guarded=True)
 
-    if editing_aux_uuid:
+    if mask_uuid:
+        name = ""
         try:
-            from . import runtime
-
-            item = runtime.aux_mask_for_uuid(project, editing_aux_uuid)
-            row.label(text=f"Editing: {getattr(item, 'name', 'Mask')}", icon="IMAGE_DATA")
-        except (ImportError, AttributeError, ReferenceError):
-            pass
-        if _operator_exists("quicksdf.aux_mask_back"):
+            item = runtime.aux_mask_for_uuid(project, mask_uuid)
+            name = str(getattr(item, "name", ""))
+        except (AttributeError, ReferenceError, RuntimeError):
+            name = ""
+        row.label(
+            text=tr("Editing: %s") % (name or tr("Mask")), icon="IMAGE_DATA"
+        )
+        if widgets.operator_exists("quicksdf.aux_mask_back"):
             back = row.operator(
-                "quicksdf.aux_mask_back", text="Back to Face Shadow", icon="LOOP_BACK"
+                "quicksdf.aux_mask_back", text=tr("Back to Face Shadow"), icon="LOOP_BACK"
             )
-            back.mask_uuid = editing_aux_uuid
+            back.mask_uuid = mask_uuid
     else:
         row.separator()
-        if _operator_exists("quicksdf.curve_edit_enter"):
+        if widgets.operator_exists("quicksdf.curve_edit_enter"):
             row.operator(
-                "quicksdf.curve_edit_enter",
-                text="Terminator",
-                icon="CURVE_BEZCURVE",
+                "quicksdf.curve_edit_enter", text=tr("Terminator"), icon="CURVE_BEZCURVE"
             )
-    if not editing_aux_uuid and _operator_exists("quicksdf.mirror_toggle"):
-        row.operator(
-            "quicksdf.mirror_toggle", text="Mirror On", icon="MOD_MIRROR",
-            depress=bool(project.mirror_enabled),
+        widgets.display_row(
+            row,
+            project,
+            guarded=True,
+            image_editor=getattr(getattr(context, "area", None), "type", "") == "IMAGE_EDITOR",
         )
 
-    if not editing_aux_uuid:
-        display = row.row(align=True)
-        display.enabled = not bool(project.mesh_normals_preview)
-        display.prop(project, "preview_mode", text="")
-    if not editing_aux_uuid and getattr(getattr(context, "area", None), "type", "") == "IMAGE_EDITOR":
-        row.prop(project, "onion_enabled", text="Onion", toggle=True, icon="IMAGE_ALPHA")
-        row.prop(project, "limit_paint_to_face_uv", toggle=True)
-        if bool(project.limit_paint_to_face_uv):
-            row.prop(project, "paint_padding_px")
-
-    row.separator()
-    preparing_auto_key = bool(
-        session is not None
-        and str(getattr(session, "provisional_state", "NONE")) == "PREPARING"
+    widgets.header_status_row(
+        row, project, session=ui_context.session(context), guarded=True
     )
-    if preparing_auto_key and _operator_exists("quicksdf.cancel_auto_key"):
-        row.label(text="Preparing angle", icon="TIME")
-        row.operator("quicksdf.cancel_auto_key", text="Cancel", icon="CANCEL")
-    elif bool(project.job_running) and _operator_exists("quicksdf.cancel_job"):
-        row.operator("quicksdf.cancel_job", text="Cancel", icon="CANCEL")
-    elif _operator_exists("quicksdf.export_texture"):
-        row.operator("quicksdf.export_texture", text="Export Threshold Map", icon="EXPORT")
-    if _operator_exists("quicksdf.studio_exit"):
-        row.operator("quicksdf.studio_exit", text="Exit Quick SDF", icon="X")
 
 
 _PAINT_KEYMAP = (

@@ -2,7 +2,7 @@
 """User-level presentation settings, independent of paint projects."""
 
 import bpy  # type: ignore[import-not-found]  # Provided by Blender.
-from bpy.props import FloatProperty  # type: ignore[import-not-found]
+from bpy.props import BoolProperty, FloatProperty  # type: ignore[import-not-found]
 
 ADDON_ID = __package__
 
@@ -28,6 +28,7 @@ def draw_ui_settings(layout, context):
     if preferences is None:
         return
     layout.prop(preferences, "timeline_ui_scale", slider=True)
+    layout.prop(preferences, "front_axes_open", toggle=True)
     if not context.preferences.use_preferences_save:
         layout.operator("wm.save_userpref", text="Save Preferences", icon="FILE_TICK")
 
@@ -43,6 +44,13 @@ class QSDF_AddonPreferences(bpy.types.AddonPreferences):
         max=2.0,
         step=5,
         precision=2,
+        update=_redraw_ui,
+    )
+
+    front_axes_open: BoolProperty(  # type: ignore  # Blender RNA declaration.
+        name="Front Axis Buttons",
+        description="Show the world-axis front buttons in the Quick SDF sidebar",
+        default=True,
         update=_redraw_ui,
     )
 

@@ -513,19 +513,6 @@ class QSDFSettings(PropertyGroup):
     mask_sequence_directory: StringProperty(name="Mask Directory", subtype="DIR_PATH", default="//QuickSDF_masks")
 
 
-def aux_mask_for_uuid(project, mask_uuid: str):
-    wanted = str(mask_uuid)
-    if not wanted:
-        return None
-    try:
-        return next(
-            (item for item in project.aux_masks if str(item.uuid) == wanted),
-            None,
-        )
-    except (AttributeError, ReferenceError, TypeError):
-        return None
-
-
 def aux_mask_for_role(project, role: str):
     wanted = str(role)
     try:

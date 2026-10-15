@@ -43,7 +43,6 @@ def register():
         viewport_lighting.register_overlay()
         tools.register_tools()
         curve_session.register_curve_session()
-        ui.register_keymaps()
     except Exception:
         # Registration can fail after RNA properties, handlers, draw callbacks or
         # keymaps have been installed.  Unwind those resources before removing
@@ -58,7 +57,6 @@ def register():
 
         for cleanup in (
             viewport_lighting.unregister_overlay,
-            ui.unregister_keymaps,
             curve_session.unregister_curve_session,
             studio.unregister_studio,
             tools.unregister_tools,
@@ -87,7 +85,6 @@ def unregister():
 
     operators.shutdown_bake_job(message="Base update cancelled because the add-on was disabled")
     operators.shutdown_export_job(message="Export cancelled because the add-on was disabled")
-    ui.unregister_keymaps()
     curve_session.unregister_curve_session()
     studio.unregister_studio()
     tools.unregister_tools()

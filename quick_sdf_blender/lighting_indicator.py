@@ -8,18 +8,14 @@ import bpy
 from bpy.app.handlers import persistent
 from mathutils import Vector
 
+from .ui import context as ui_context
+
 _HANDLE = None
 _CACHE = {}
 
 
 def _attribute_name(project):
     return "_qsdf_light_center_" + str(project.uuid).replace("-", "")
-
-
-def _project(context):
-    obj = context.active_object
-    return next((p for p in getattr(context.scene, "quick_sdf_projects", ())
-                 if p.target_object == obj), None)
 
 
 def _redraw():
@@ -37,13 +33,13 @@ class QUICKSDF_OT_light_center_from_faces(bpy.types.Operator):
     def poll(cls, context):
         obj = context.active_object
         return (obj is not None and obj.type == "MESH" and obj.mode == "EDIT"
-                and _project(context) is not None
+                and ui_context.object_project(context) is not None
                 and context.area is not None and context.area.type == "VIEW_3D")
 
     def execute(self, context):
         import bmesh
 
-        project = _project(context)
+        project = ui_context.object_project(context)
         obj = project.target_object
         bm = bmesh.from_edit_mesh(obj.data)
         selected = [face for face in bm.faces if not face.hide and face.select]
@@ -72,12 +68,12 @@ class QUICKSDF_OT_light_center_reset(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         obj = context.active_object
-        return obj is not None and obj.type == "MESH" and _project(context) is not None
+        return obj is not None and obj.type == "MESH" and ui_context.object_project(context) is not None
 
     def execute(self, context):
         import bmesh
 
-        project = _project(context)
+        project = ui_context.object_project(context)
         obj = project.target_object
         name = _attribute_name(project)
         if obj.mode == "EDIT":
@@ -94,22 +90,6 @@ class QUICKSDF_OT_light_center_reset(bpy.types.Operator):
         _CACHE.clear()
         _redraw()
         return {"FINISHED"}
-
-
-class QSDF_PT_light_center(bpy.types.Panel):
-    bl_label = "Light Indicator Center"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "Quick SDF"
-
-    @classmethod
-    def poll(cls, context):
-        return _project(context) is not None
-
-    def draw(self, context):
-        self.layout.label(text="Edit Mode: select face polygons in 3D")
-        self.layout.operator("quicksdf.light_center_from_faces")
-        self.layout.operator("quicksdf.light_center_reset")
 
 
 def _geometry(context, project):
@@ -283,5 +263,4 @@ def unregister_overlay():
     _CACHE.clear()
 
 
-CLASSES = (QUICKSDF_OT_light_center_from_faces, QUICKSDF_OT_light_center_reset,
-           QSDF_PT_light_center)
+CLASSES = (QUICKSDF_OT_light_center_from_faces, QUICKSDF_OT_light_center_reset)

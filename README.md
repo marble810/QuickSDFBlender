@@ -54,7 +54,7 @@ Texture Paintに必要なDisplayだけをRGBA8 Imageとして保持し、Baseと
 | 右上 | 顔を見ながら3Dペイント／プレビュー |
 | 下 | 角度キーを選ぶタイムライン |
 
-通常作業で使うのは `Light`、`Shadow`、`Mirror On`、表示切替、`Export`だけです。解像度、UV、軸、Mirror方式、Boundaryなどは、3D Viewの `Quick SDF` → `Advanced` にまとめています。
+通常作業で使うのは `Light`、`Shadow`、`Mirror On`、表示切替、`Export`だけです。解像度、UV、軸、Mirror方式、Boundaryなどは、3D Viewの `N` → `Quick SDF` パネルにまとめています。`Front`の軸ボタンだけは見出し左の矢印で畳めます。
 
 3D Viewの `Quick SDF` サイドバー最下部にある `UI Settings` → `Bottom UI Scale` で、下部のライト操作UI全体を0.5～2倍に調整できます。倍率は全Project共通のBlenderユーザー設定として保存されます。プリファレンスの自動保存をOFFにしている場合は、同じパネルの `Save Preferences` を押してください。
 
@@ -77,7 +77,7 @@ Texture Paintに必要なDisplayだけをRGBA8 Imageとして保持し、Baseと
 
 角度のつながりに矛盾があっても、元のペイントを変更せず、書き出し用データだけを自動調整します。初回だけ保存先を選び、同じパスへの上書き時は確認が表示されます。エンジンではNon-Color／Dataテクスチャとして扱ってください。
 
-別のシェーダー向けに並べ替える場合は、`Quick SDF` → `Advanced` → `Output Packing`で`Customize`を押します。R/G/B/Aの各行へRight Threshold、Left Threshold、SDF Area、Shadow Strength、Custom Mask、Constantを割り当て、必要な行だけDirect／Invertを切り替えられます。このレシピはProject内に保存され、ほかのProjectには影響しません。ノードグラフや数式は使いません。
+別のシェーダー向けに並べ替える場合は、`Quick SDF` → `Output Packing`で`Customize`を押します。R/G/B/Aの各行へRight Threshold、Left Threshold、SDF Area、Shadow Strength、Custom Mask、Constantを割り当て、必要な行だけDirect／Invertを切り替えられます。このレシピはProject内に保存され、ほかのProjectには影響しません。ノードグラフや数式は使いません。
 
 `Additional Masks`では、全角度に共通する`SDF Area`と`Shadow Strength`を3D／2Dでペイントできます。任意のCustom Maskも追加でき、既存のBlender ImageからR/G/B/A/Luminanceのいずれかを読み込めます。マスク編集を終えるときは`Back to Face Shadow`で角度別ペイントへ戻ります。
 

@@ -11,7 +11,9 @@ import uuid
 
 import bpy
 from bpy.app.handlers import persistent
+from mathutils import Vector
 
+from .bake import WORLD_FRONT_AXES
 from .bitplane import (
     BitplaneError,
     BitplaneRole,
@@ -391,6 +393,26 @@ def active_angle(project: Any) -> Any | None:
     return angles[index]
 
 
+def matching_world_front_axis(obj: Any, forward_vector: Any) -> str | None:
+    """Return the world front axis that best matches the object rotation.
+
+    ``None`` means the face does not point along any world axis.
+    """
+
+    if obj is None:
+        return None
+    rotation = obj.matrix_world.to_quaternion()
+    world = (rotation @ Vector(forward_vector)).normalized()
+    best = None
+    best_dot = 0.999
+    for axis_id, vector in WORLD_FRONT_AXES.items():
+        dot = float(world.dot(Vector(vector)))
+        if dot > best_dot:
+            best = axis_id
+            best_dot = dot
+    return best
+
+
 _LAYER_FIELDS = {
     DISPLAY_ROLE: ("display_image", "display_image_name"),
 }
@@ -604,6 +626,71 @@ def aux_mask_for_uuid(project: Any, mask_uuid: str) -> Any | None:
         ),
         None,
     )
+
+
+def packing_channel_map(project: Any) -> dict[str, Any]:
+    """Return the first packing entry that writes each RGBA output channel."""
+
+    result: dict[str, Any] = {}
+    for channel in getattr(project, "packing_channels", ()):
+        output = str(channel.output_channel).upper()
+        if output in {"R", "G", "B", "A"} and output not in result:
+            result[output] = channel
+    return result
+
+
+def packing_channel_counts(project: Any) -> dict[str, int]:
+    """Return how many packing entries write each RGBA output channel."""
+
+    return {
+        output: sum(
+            str(item.output_channel).upper() == output
+            for item in getattr(project, "packing_channels", ())
+        )
+        for output in "RGBA"
+    }
+
+
+def packing_channel_error(project: Any, channel: Any) -> str:
+    """Return the validation token for one packing row, or an empty string.
+
+    Tokens are turned into artist-facing text by the sidebar panel, so this
+    stays free of interface wording.
+    """
+
+    source = str(channel.source_type).upper()
+    if source not in {
+        "RIGHT_THRESHOLD",
+        "LEFT_THRESHOLD",
+        "SDF_AREA",
+        "SHADOW_STRENGTH",
+        "CUSTOM_MASK",
+        "CONSTANT",
+    }:
+        return "unknown_source"
+    item = None
+    if source in {"SDF_AREA", "SHADOW_STRENGTH"}:
+        item = next(
+            (mask for mask in project.aux_masks if str(mask.role) == source),
+            None,
+        )
+        if item is None:
+            return "required_mask_missing"
+    elif source == "CUSTOM_MASK":
+        item = aux_mask_for_uuid(project, str(channel.auxiliary_mask_uuid))
+        if item is None or str(getattr(item, "role", "")) != "CUSTOM":
+            return "select_custom_mask"
+    if item is None:
+        return ""
+    # Panel draw callbacks must never repair ID references. Blender rejects
+    # property writes while restricted draw data is active.
+    image = find_aux_mask_image(project, item)
+    if image is None:
+        return "mask_image_missing"
+    expected = int(project.resolution)
+    if tuple(map(int, image.size[:])) != (expected, expected):
+        return "resolution_mismatch"
+    return ""
 
 
 def active_aux_mask(project: Any) -> Any | None:

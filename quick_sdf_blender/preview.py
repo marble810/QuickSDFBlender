@@ -601,15 +601,9 @@ if bpy is not None:
         for handlers, callback in handler_pairs:
             if callback not in handlers:
                 handlers.append(callback)
-        from . import ui
-
-        ui.register_draw_handlers()
 
 
     def unregister_preview() -> None:
-        from . import ui
-
-        ui.unregister_draw_handlers()
         restore_all_preview_materials()
         handler_pairs = (
             (bpy.app.handlers.save_pre, _save_pre),

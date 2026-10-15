@@ -191,6 +191,32 @@ TRANSLATIONS["ja_JP"].update({
     ("*", "%s: Duplicate channel mapping"): "%s：チャンネル割り当てが重複しています",
 })
 
+# Sidebar strings that were drawn as raw English before the sidebar tab gained
+# a single owner.  Every ``text=`` argument now goes through :func:`tr`.
+TRANSLATIONS["ja_JP"].update({
+    ("*", "Select the face polygons in the 3D View"): "3Dビューで顔のポリゴンを選択してください",
+    ("*", "Select Face Area…"): "Face Areaを選択…",
+    ("*", "Create & Edit Selected Faces"): "選択面を作成して編集",
+    ("*", "Cancel Face Area Selection"): "Face Areaの選択をキャンセル",
+    ("*", "Choose a surface when creating"): "作成時に使用するサーフェスを選択",
+    ("*", "Face Area: %s selected faces"): "Face Area：%s面を選択中",
+    ("*", "Face Area: Entire %s surface"): "Face Area：%sサーフェス全体",
+    ("*", "Face Area: %s faces · %s %s"): "Face Area：%s面・%s %s",
+    ("*", "Use Face Area when the face shares a mesh with the body."): "顔が体と同じメッシュにある場合はFace Areaを使ってください。",
+    ("*", "material"): "マテリアル",
+    ("*", "materials"): "マテリアル",
+    ("*", "Object"): "オブジェクト",
+    ("*", "UV Map"): "UVマップ",
+    ("*", "4096 uses substantial memory."): "4096はメモリを大量に使います。",
+    ("*", "Generating…"): "生成中…",
+    ("*", "Editing: %s"): "編集中：%s",
+    ("*", "Edit Mode: select face polygons in 3D"): "編集モード：3Dビューで面を選択してください",
+    ("*", "Front Axis Buttons"): "前方向の軸ボタンを表示",
+    ("*", "Light Indicator Center"): "ライト中心の表示",
+    ("*", "Use Selected Faces as Light Center"): "選択した面をライト中心に設定",
+    ("*", "Use Face Area as Light Center"): "Face Areaをライト中心に設定",
+})
+
 _REGISTERED = False
 
 
