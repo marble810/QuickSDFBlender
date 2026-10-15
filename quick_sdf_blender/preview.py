@@ -270,7 +270,10 @@ if bpy is not None:
         if image is not None:
             texture.image = image
             try:
-                image.colorspace_settings.name = "Non-Color"
+                # Even assigning the same colorspace resets an unpacked
+                # generated image to its blank buffer in Blender 5.1.
+                if image.colorspace_settings.name != "Non-Color":
+                    image.colorspace_settings.name = "Non-Color"
             except (AttributeError, TypeError):
                 pass
 

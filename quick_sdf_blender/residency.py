@@ -30,6 +30,8 @@ def _revision(image: Any) -> int:
 
 
 def _packed_revision(image: Any) -> int:
+    if getattr(image, "packed_file", None) is None:
+        return -1
     return int(image.get(PACKED_REVISION_KEY, -1))
 
 
@@ -70,7 +72,14 @@ def pack_now(image: Any | None) -> bool:
     if image is None or not _persistent(image):
         return False
     ensure_loaded(image)
+    # Blender can skip packing a clean generated image. Mark its buffer dirty
+    # without changing the pixels, including intentionally uniform masks.
+    if str(image.source) == "GENERATED" and not image.is_dirty:
+        image.pixels[0] = image.pixels[0]
+        image.update()
     image.pack()
+    if image.packed_file is None:
+        raise RuntimeError(f"Image {image.name!r} did not produce packed data")
     image[PACKED_REVISION_KEY] = _revision(image)
     _DIRTY.pop(str(image.name), None)
     return True

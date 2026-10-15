@@ -246,7 +246,8 @@ def _preview_image(project: Any, width: int, height: int):
     image[runtime.ROLE_KEY] = SEEK_PREVIEW_ROLE
     runtime.make_image_opaque(image)
     try:
-        image.colorspace_settings.name = "Non-Color"
+        if image.colorspace_settings.name != "Non-Color":
+            image.colorspace_settings.name = "Non-Color"
     except (AttributeError, TypeError):
         pass
     return image
@@ -264,7 +265,8 @@ def _onion_image(project: Any, width: int, height: int):
     image[runtime.ROLE_KEY] = ONION_PREVIEW_ROLE
     runtime.make_image_opaque(image)
     try:
-        image.colorspace_settings.name = "Non-Color"
+        if image.colorspace_settings.name != "Non-Color":
+            image.colorspace_settings.name = "Non-Color"
     except (AttributeError, TypeError):
         pass
     return image

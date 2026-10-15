@@ -635,7 +635,8 @@ def tag_image(
     image[ANGLE_UUID_KEY] = angle_uuid
     image[ROLE_KEY] = role
     try:
-        image.colorspace_settings.name = "Non-Color"
+        if image.colorspace_settings.name != "Non-Color":
+            image.colorspace_settings.name = "Non-Color"
     except (AttributeError, TypeError):
         pass
 
