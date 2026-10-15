@@ -6,3 +6,7 @@ build/
 dist/
 *.egg-info/
 quick_sdf_blender/bin/Release/
+
+# Local-only reference material: third-party plugin sources + decomposition notes.
+# Never committed (see refs/README.md).
+refs/

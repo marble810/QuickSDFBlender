@@ -11,13 +11,10 @@ from typing import Any, Sequence
 
 import bpy
 
+from . import bl_ui_rounded
 from .model import SIDE_LIGHT_KEY_ANGLE
-from .studio import (
-    TIMELINE_SPACE_TYPE,
-    WORKSPACE_PROJECT_TAG,
-    active_session,
-    resolve_session_project,
-)
+from .studio import TIMELINE_SPACE_TYPE, active_session
+from .ui import context as ui_context
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,15 +42,16 @@ class TimelineGeometry:
 
 
 _DRAW_HANDLE: Any = None
-_COLOR_SHADER: Any = None
 _IMAGE_SHADER: Any = None
 _ADDON_KEYMAPS: list[tuple[Any, Any]] = []
 _SCRUB_PREVIEW_INTERVAL = 1.0 / 30.0
 _GEOMETRY_CACHE: OrderedDict[tuple[Any, ...], TimelineGeometry] = OrderedDict()
-_RECT_BATCH_CACHE: OrderedDict[tuple[float, float, float, float], Any] = OrderedDict()
 _IMAGE_BATCH_CACHE: OrderedDict[tuple[float, ...], Any] = OrderedDict()
 _GEOMETRY_CACHE_LIMIT = 64
 _BATCH_CACHE_LIMIT = 256
+# Rounded thumbnail corners are clipped geometrically (the image shader is a
+# builtin, so it cannot mask); more segments keep those corners round.
+_THUMBNAIL_CORNER_SEGMENTS = 8
 _AUTHORING_ANGLE_MIN = 0.0
 _AUTHORING_ANGLE_MAX = 90.0
 
@@ -228,14 +226,6 @@ def build_geometry(width: float, height: float, keys: Sequence[tuple[int, Any]])
     return result
 
 
-def _project_for_context(context: Any) -> Any | None:
-    session = active_session(context)
-    workspace = getattr(context, "workspace", None)
-    if session is None or workspace is None or workspace.get(WORKSPACE_PROJECT_TAG) != session.project_uuid:
-        return None
-    return resolve_session_project(session)
-
-
 def _image_for_key(project: Any, item: Any) -> Any | None:
     image = getattr(item, "display_image", None)
     if image is not None:
@@ -248,39 +238,21 @@ def _image_for_key(project: Any, item: Any) -> Any | None:
     return None
 
 
-def _shader() -> Any:
-    global _COLOR_SHADER
-    if _COLOR_SHADER is None:
-        import gpu
+def _rect(rect: Rect, color: tuple[float, float, float, float], radius: Any = 0.0) -> None:
+    from . import bl_ui_rounded
 
-        _COLOR_SHADER = gpu.shader.from_builtin("UNIFORM_COLOR")
-    return _COLOR_SHADER
+    bl_ui_rounded.draw(rect.x0, rect.y0, rect.x1, rect.y1, fill=color, radius=radius)
 
 
-def _rect(rect: Rect, color: tuple[float, float, float, float]) -> None:
-    from gpu_extras.batch import batch_for_shader
+def _outline(rect: Rect, color: tuple[float, float, float, float], thickness: float = 2.0,
+             radius: Any = 0.0) -> None:
+    if radius:
+        from . import bl_ui_rounded
 
-    shader = _shader()
-    key = (rect.x0, rect.y0, rect.x1, rect.y1)
-    batch = _RECT_BATCH_CACHE.get(key)
-    if batch is None:
-        batch = batch_for_shader(
-            shader,
-            "TRIS",
-            {"pos": ((rect.x0, rect.y0), (rect.x1, rect.y0), (rect.x1, rect.y1), (rect.x0, rect.y1))},
-            indices=((0, 1, 2), (2, 3, 0)),
-        )
-        _RECT_BATCH_CACHE[key] = batch
-        while len(_RECT_BATCH_CACHE) > _BATCH_CACHE_LIMIT:
-            _RECT_BATCH_CACHE.popitem(last=False)
-    else:
-        _RECT_BATCH_CACHE.move_to_end(key)
-    shader.bind()
-    shader.uniform_float("color", color)
-    batch.draw(shader)
-
-
-def _outline(rect: Rect, color: tuple[float, float, float, float], thickness: float = 2.0) -> None:
+        # Rounded outlines follow the same arc outline as the rounded fill.
+        bl_ui_rounded.draw(rect.x0, rect.y0, rect.x1, rect.y1, radius=radius, border=color,
+                           border_thickness=thickness)
+        return
     _rect(Rect(rect.x0, rect.y0, rect.x1, rect.y0 + thickness), color)
     _rect(Rect(rect.x0, rect.y1 - thickness, rect.x1, rect.y1), color)
     _rect(Rect(rect.x0, rect.y0, rect.x0 + thickness, rect.y1), color)
@@ -289,14 +261,22 @@ def _outline(rect: Rect, color: tuple[float, float, float, float], thickness: fl
 
 def _text(text: str, x: float, y: float, color=(0.9, 0.92, 0.96, 1.0), size: int = 11) -> None:
     import blf
+    import gpu
 
+    # ``blf`` leaves the GPU blend state at NONE, which turns every later
+    # transparent draw (rounded fills, SDF rings, image masks) into a solid
+    # black shape.  Restore the state the caller was using.
+    previous = gpu.state.blend_get()
     try:
-        blf.size(0, size)
-    except TypeError:
-        blf.size(0, size, 72)
-    blf.color(0, *color)
-    blf.position(0, x, y, 0)
-    blf.draw(0, text)
+        try:
+            blf.size(0, size)
+        except TypeError:
+            blf.size(0, size, 72)
+        blf.color(0, *color)
+        blf.position(0, x, y, 0)
+        blf.draw(0, text)
+    finally:
+        gpu.state.blend_set(previous)
 
 
 def _draw_thumbnail(
@@ -306,6 +286,8 @@ def _draw_thumbnail(
     project: Any | None = None,
     active_image: Any | None = None,
     scale: float = 1.0,
+    label_height: float | None = None,
+    radius: Any = 0.0,
 ) -> bool:
     try:
         global _IMAGE_SHADER
@@ -329,21 +311,31 @@ def _draw_thumbnail(
         if _IMAGE_SHADER is None:
             _IMAGE_SHADER = gpu.shader.from_builtin("IMAGE_SCENE_LINEAR_TO_REC709_SRGB")
         # Reserve the bottom strip for the progress label, not the top.
-        positions = (
-            (rect.x0 + 2.0 * scale, rect.y0 + 16.0 * scale),
-            (rect.x1 - 2.0 * scale, rect.y0 + 16.0 * scale),
-            (rect.x1 - 2.0 * scale, rect.y1 - 2.0 * scale),
-            (rect.x0 + 2.0 * scale, rect.y1 - 2.0 * scale),
+        strip = 16.0 * scale if label_height is None else float(label_height)
+        inner = Rect(rect.x0 + 2.0 * scale, rect.y0 + strip,
+                     rect.x1 - 2.0 * scale, rect.y1 - 2.0 * scale)
+        # ``thumbnail_texture`` already returns the 96x64 derivative cropped to
+        # the project's UV bbox, so the mesh samples the full 0..1 range.
+        shape = None if not radius else bl_ui_rounded.mesh(
+            inner.x0, inner.y0, inner.x1, inner.y1, radius,
+            segments=_THUMBNAIL_CORNER_SEGMENTS,
         )
-        key = (rect.x0, rect.y0, rect.x1, rect.y1, scale)
+        key = (rect.x0, rect.y0, rect.x1, rect.y1, scale, strip,
+               None if not radius else float(radius))
         batch = _IMAGE_BATCH_CACHE.get(key)
         if batch is None:
-            tex_coords = ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))
+            if shape is None:
+                positions = ((inner.x0, inner.y0), (inner.x1, inner.y0),
+                             (inner.x1, inner.y1), (inner.x0, inner.y1))
+                tex_coords = ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))
+                indices = ((0, 1, 2), (2, 3, 0))
+            else:
+                positions, tex_coords, indices = shape
             batch = batch_for_shader(
                 _IMAGE_SHADER,
                 "TRIS",
                 {"pos": positions, "texCoord": tex_coords},
-                indices=((0, 1, 2), (2, 3, 0)),
+                indices=indices,
             )
             _IMAGE_BATCH_CACHE[key] = batch
             while len(_IMAGE_BATCH_CACHE) > _BATCH_CACHE_LIMIT:
@@ -420,7 +412,7 @@ def _draw_timeline() -> None:
     context = bpy.context
     if getattr(context, "area", None) is None or context.area.type != TIMELINE_SPACE_TYPE:
         return
-    project = _project_for_context(context)
+    project = ui_context.studio_workspace_project(context)
     if project is None or context.region is None:
         return
     import gpu
@@ -666,7 +658,7 @@ class QSDF_GT_timeline_capture(bpy.types.Gizmo):
         return 0 if 0.0 <= x <= context.region.width and 0.0 <= y <= context.region.height else -1
 
     def invoke(self, context, event):
-        project = _project_for_context(context)
+        project = ui_context.studio_workspace_project(context)
         if project is None:
             return {"CANCELLED"}
         session = active_session(context)
@@ -720,7 +712,7 @@ class QSDF_GT_timeline_capture(bpy.types.Gizmo):
             _set_seek(context, project, self._initial_seek)
 
     def modal(self, context, event, _tweak):
-        project = _project_for_context(context)
+        project = ui_context.studio_workspace_project(context)
         if project is None:
             _clear_scrub_status(context)
             return {"CANCELLED"}
@@ -755,7 +747,7 @@ class QSDF_GT_timeline_capture(bpy.types.Gizmo):
     def exit(self, context, cancel):
         if not self._dragging:
             return
-        project = _project_for_context(context)
+        project = ui_context.studio_workspace_project(context)
         if project is None:
             _clear_scrub_status(context)
             self._dragging = False
@@ -777,7 +769,7 @@ class QSDF_GGT_timeline(bpy.types.GizmoGroup):
 
     @classmethod
     def poll(cls, context):
-        if _project_for_context(context) is None:
+        if ui_context.studio_workspace_project(context) is None:
             return False
         session = active_session(context)
         return not bool(session is not None and getattr(session, "editing_aux_mask_uuid", ""))
@@ -798,7 +790,7 @@ class QUICKSDF_OT_timeline_block_context_menu(bpy.types.Operator):
     def poll(cls, context):
         return bool(
             getattr(getattr(context, "area", None), "type", "") == TIMELINE_SPACE_TYPE
-            and _project_for_context(context) is not None
+            and ui_context.studio_workspace_project(context) is not None
         )
 
     def execute(self, _context):
@@ -843,7 +835,7 @@ def register_timeline() -> None:
 
 
 def unregister_timeline() -> None:
-    global _DRAW_HANDLE, _COLOR_SHADER, _IMAGE_SHADER
+    global _DRAW_HANDLE, _IMAGE_SHADER
     while _ADDON_KEYMAPS:
         keymap, item = _ADDON_KEYMAPS.pop()
         try:
@@ -856,11 +848,10 @@ def unregister_timeline() -> None:
         except (ReferenceError, ValueError):
             pass
         _DRAW_HANDLE = None
-    _COLOR_SHADER = None
     _IMAGE_SHADER = None
     _GEOMETRY_CACHE.clear()
-    _RECT_BATCH_CACHE.clear()
     _IMAGE_BATCH_CACHE.clear()
+    bl_ui_rounded.clear_caches()
     try:
         from .preview_cache import invalidate
 
